@@ -37,11 +37,11 @@ def show_chatbot():
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # 4. 봇 응답 생성 (수정됨: 예비군 고정 응답)
-        # [!!!] 어떤 질문이든 이 응답으로 고정 [!!!]
-        response_content = "지금은 담당자가 예비군에 참석하여 답변이 어렵습니다. 🫡"
-        # (원하는 이미지 URL로 변경 가능)
-        image_url = "./army.JPG" 
+        # # 4. 봇 응답 생성 (수정됨: 예비군 고정 응답)
+        # # [!!!] 어떤 질문이든 이 응답으로 고정 [!!!]
+        # response_content = "지금은 담당자가 예비군에 참석하여 답변이 어렵습니다. 🫡"
+        # # (원하는 이미지 URL로 변경 가능)
+        # image_url = "./army.JPG" 
         
         # 봇 응답 추가 (내용 + 이미지 URL)
         st.session_state.chat_messages.append({
