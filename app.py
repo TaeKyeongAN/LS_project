@@ -1,6 +1,4 @@
-# VSCode를 쓰신다면, 상단 메뉴에서 [Terminal] → [New Terminal] 클릭
 
-# 아래 명령어 한 번만 입력:
 # streamlit run app.py
 
 import streamlit as st
@@ -12,8 +10,7 @@ from fpdf import FPDF
 from datetime import datetime
 import io 
 
-# [!!!] 1. (신규) 스크립트 상단에 챗봇 함수 추가 [!!!]
-# [!!!] 1. (수정) 챗봇 함수 수정 [!!!]
+
 @st.dialog("🤖 챗봇")
 def show_chatbot():
     """st.dialog를 사용하여 모달 챗봇 UI를 표시합니다."""
@@ -37,11 +34,9 @@ def show_chatbot():
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # # 4. 봇 응답 생성 (수정됨: 예비군 고정 응답)
-        # # [!!!] 어떤 질문이든 이 응답으로 고정 [!!!]
+        # # 4. 봇 응답 생성
         # response_content = "지금은 담당자가 예비군에 참석하여 답변이 어렵습니다. 🫡"
-        # # (원하는 이미지 URL로 변경 가능)
-        # image_url = "./army.JPG" 
+        # image_url = "./data/army.JPG" 
         
         # 봇 응답 추가 (내용 + 이미지 URL)
         st.session_state.chat_messages.append({
