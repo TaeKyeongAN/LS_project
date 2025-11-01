@@ -11,52 +11,51 @@ from datetime import datetime
 import io 
 
 
-@st.dialog("🤖 챗봇")
-def show_chatbot():
-    """st.dialog를 사용하여 모달 챗봇 UI를 표시합니다."""
+# @st.dialog("🤖 챗봇")
+# def show_chatbot():
+#     """st.dialog를 사용하여 모달 챗봇 UI를 표시합니다."""
     
-    # 1. 챗봇 기록 초기화 (session_state 사용)
-    if "chat_messages" not in st.session_state:
-        st.session_state.chat_messages = [{"role": "assistant", "content": "안녕하세요! 대시보드 관련 질문에 답변해 드립니다."}]
+#     # 1. 챗봇 기록 초기화 (session_state 사용)
+#     if "chat_messages" not in st.session_state:
+#         st.session_state.chat_messages = [{"role": "assistant", "content": "안녕하세요! 대시보드 관련 질문에 답변해 드립니다."}]
 
-    # 2. 기존 메시지 표시 (이미지 렌더링 포함)
-    for msg in st.session_state.chat_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            # [!!!] 챗봇 응답에 이미지가 포함된 경우 함께 표시 [!!!]
-            if msg["role"] == "assistant" and "image" in msg:
-                st.image(msg["image"])
+#     # 2. 기존 메시지 표시 (이미지 렌더링 포함)
+#     for msg in st.session_state.chat_messages:
+#         with st.chat_message(msg["role"]):
+#             st.markdown(msg["content"])
+#             # [!!!] 챗봇 응답에 이미지가 포함된 경우 함께 표시 [!!!]
+#             if msg["role"] == "assistant" and "image" in msg:
+#                 st.image(msg["image"])
 
-    # 3. 사용자 입력 받기
-    if prompt := st.chat_input("메시지를 입력하세요..."):
-        # 사용자 메시지 추가 및 표시
-        st.session_state.chat_messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+#     # 3. 사용자 입력 받기
+#     if prompt := st.chat_input("메시지를 입력하세요..."):
+#         # 사용자 메시지 추가 및 표시
+#         st.session_state.chat_messages.append({"role": "user", "content": prompt})
+#         with st.chat_message("user"):
+#             st.markdown(prompt)
 
-        # # 4. 봇 응답 생성
-        # response_content = "지금은 담당자가 예비군에 참석하여 답변이 어렵습니다. 🫡"
-        # image_url = "./data/army.JPG" 
+#         # 4. 봇 응답 생성
+#         response_content = "지금은 담당자가 예비군에 참석하여 답변이 어렵습니다. 🫡"
+#         image_url = "./data/army.JPG" 
         
-        # 봇 응답 추가 (내용 + 이미지 URL)
-        st.session_state.chat_messages.append({
-            "role": "assistant", 
-            "content": response_content,
-            "image": image_url  # [!!!] 이미지 URL을 세션에 함께 저장 [!!!]
-        })
+#         # 봇 응답 추가 (내용 + 이미지 URL)
+#         st.session_state.chat_messages.append({
+#             "role": "assistant", 
+#             "content": response_content,
+#             "image": image_url  # [!!!] 이미지 URL을 세션에 함께 저장 [!!!]
+#         })
         
-        # 봇 응답 즉시 표시 (라이브)
-        with st.chat_message("assistant"):
-            st.markdown(response_content)
-            st.image(image_url) # [!!!] 생성 시점에도 이미지 표시 [!!!]
+#         # 봇 응답 즉시 표시 (라이브)
+#         with st.chat_message("assistant"):
+#             st.markdown(response_content)
+#             st.image(image_url) # [!!!] 생성 시점에도 이미지 표시 [!!!]
         
-    # [!!!] 5. (삭제) st.rerun() 삭제 (기존과 동일)
     
-    # [!!!] 6. (신규) 챗봇 닫기 버튼 추가 (기존과 동일)
-    st.divider()
-    if st.button("닫기", use_container_width=True):
-        st.session_state.show_chat = False
-        st.rerun()
+#     # [!!!] 6. (신규) 챗봇 닫기 버튼 추가 (기존과 동일)
+#     st.divider()
+#     if st.button("닫기", use_container_width=True):
+#         st.session_state.show_chat = False
+#         st.rerun()
 
 # -----------------------------
 # [삭제] 예측 모델/함수 섹션
