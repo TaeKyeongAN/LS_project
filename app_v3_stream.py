@@ -3,18 +3,20 @@
 from __future__ import annotations
 import io, math, time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 from pydantic import BaseModel, Field
 import altair as alt
-
 from fpdf import FPDF
 import os
+import hashlib
 
 # 폰트 경로 설정 (Nanum Gothic 폰트)
 FONT_PATH_REGULAR = "./www/fonts/NanumGothic-Regular.ttf"
@@ -406,42 +408,68 @@ def human_pct(a: float) -> str:
     return f"{a:+.1f}%"
 
 
+@st.cache_data(show_spinner=False)
+def load_train_pf_dataset() -> pd.DataFrame:
+    path = Path("./data/train.csv")
+    if not path.exists():
+        st.error("train.csv 파일을 찾을 수 없습니다. 부하/그룹 분석 탭을 사용할 수 없습니다.")
+        return pd.DataFrame()
+
+    df = pd.read_csv(path)
+    rename_map = {
+        "측정일시": "timestamp",
+        "전력사용량(kWh)": "kWh",
+    }
+    for src, dst in rename_map.items():
+        if src in df.columns:
+            df = df.rename(columns={src: dst})
+    if "timestamp" not in df.columns:
+        st.error("train.csv에 'timestamp' 또는 '측정일시' 컬럼이 없어 분석을 진행할 수 없습니다.")
+        return pd.DataFrame()
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    return df
+
+
 # =========================================
 # 비교 테이블 데이터 생성 (app.py 원본)
 # =========================================
 def create_comparison_table_data(train_df, results_df):
     if train_df is None or results_df.empty:
-        return pd.DataFrame() 
+        return pd.DataFrame()
     try:
         # 1. 지난 달 (11월) 평균
-        nov_df = train_df[train_df['월'] == 11].copy()
-        nov_hourly_avg = nov_df.groupby('시간')['전기요금(원)'].mean()
+        nov_df = train_df[train_df["월"] == 11].copy()
+        nov_hourly_avg = nov_df.groupby("시간")["전기요금(원)"].mean()
 
         # 2. 어제 (Yesterday)
-        latest_datetime = results_df['측정일시'].iloc[-1]
+        latest_datetime = results_df["측정일시"].iloc[-1]
         latest_date = latest_datetime.date()
         yesterday_date = latest_date - pd.Timedelta(days=1)
 
-        yesterday_df = results_df[results_df['측정일시'].dt.date == yesterday_date]
+        yesterday_df = results_df[results_df["측정일시"].dt.date == yesterday_date]
         if yesterday_df.empty:
-            yesterday_df = train_df[train_df['측정일시'].dt.date == yesterday_date]
+            yesterday_df = train_df[train_df["측정일시"].dt.date == yesterday_date]
             if not yesterday_df.empty:
-                yesterday_hourly = yesterday_df.groupby('시간')['전기요금(원)'].mean()
+                yesterday_hourly = yesterday_df.groupby("시간")["전기요금(원)"].mean()
             else:
                 yesterday_hourly = pd.Series(dtype=float)
         else:
-            yesterday_hourly = yesterday_df.groupby('시간')['예측요금(원)'].mean()
+            yesterday_hourly = yesterday_df.groupby("시간")["예측요금(원)"].mean()
 
         # 3. 오늘 (Today)
-        today_df = results_df[results_df['측정일시'].dt.date == latest_date]
-        today_hourly = today_df.groupby('시간')['예측요금(원)'].mean()
+        today_df = results_df[results_df["측정일시"].dt.date == latest_date]
+        today_hourly = today_df.groupby("시간")["예측요금(원)"].mean()
 
         # 4. DataFrame으로 통합
-        comp_df = pd.DataFrame({
-            "11월 평균": nov_hourly_avg,
-            "어제": yesterday_hourly,
-            "오늘": today_hourly
-        }).reindex(range(24))
+        comp_df = pd.DataFrame(
+            {
+                "11월 평균": nov_hourly_avg,
+                "어제": yesterday_hourly,
+                "오늘": today_hourly,
+            }
+        ).reindex(range(24))
         comp_df["전일 대비"] = comp_df["오늘"] - comp_df["어제"].fillna(0)
 
         return comp_df.fillna(np.nan)
@@ -454,215 +482,237 @@ def create_comparison_table_data(train_df, results_df):
 # =========================================
 # PDF 생성 함수 (app.py 원본 그대로)
 # =========================================
-def generate_bill_pdf(report_data, comparison_df=None): 
+def generate_bill_pdf(report_data, comparison_df=None):
     try:
-        pdf = FPDF(orientation='P', unit='mm', format='A4')
+        pdf = FPDF(orientation="P", unit="mm", format="A4")
         pdf.add_page()
-        pdf.add_font('Nanum', '', FONT_PATH_REGULAR, uni=True)
-        pdf.add_font('Nanum', 'B', FONT_PATH_BOLD, uni=True)
-        pdf.set_font('Nanum', '', 10)
-        
+        pdf.add_font("Nanum", "", FONT_PATH_REGULAR, uni=True)
+        pdf.add_font("Nanum", "B", FONT_PATH_BOLD, uni=True)
+        pdf.set_font("Nanum", "", 10)
+
         # 3. (날짜 헤더 추가)
-        # PDF 생성 함수 상단에서 날짜 헤더 문자열 미리 만들기
         yesterday_header = f"어제 ({report_data.get('yesterday_str', '')})"
         today_header = f"오늘 ({report_data.get('today_str', '')})"
-        
+
         # --- 1~4. 상단 정보
         pdf.set_font_size(18)
-        pdf.cell(0, 15, "12월 실시간 예측 전기요금 명세서", border=1, ln=1, align='C')
-        pdf.ln(3) 
-        
-        pdf.set_font_size(12)
-        pdf.cell(0, 8, " [ 예측 고객 정보 ]", border='B', ln=1)
-        col_width = pdf.w / 2 - 12 
-        pdf.cell(col_width, 8, "고객명: LS 청주공장", border=0)
-        pdf.cell(col_width, 8, f"청구서 발행일: {report_data['report_date'].strftime('%Y-%m-%d')}", border=0, ln=1)
-        start_str = report_data['period_start'].strftime('%Y-%m-%d %H:%M')
-        end_str = report_data['period_end'].strftime('%Y-%m-%d %H:%M')
-        pdf.multi_cell(0, 6, f"예측 기간: {start_str} ~ {end_str}", border=0, align='L')
-        pdf.ln(3) 
+        pdf.cell(0, 15, "12월 실시간 예측 전기요금 명세서", border=1, ln=1, align="C")
+        pdf.ln(3)
 
-        pdf.set_fill_color(240, 240, 240) 
+        pdf.set_font_size(12)
+        pdf.cell(0, 8, " [ 예측 고객 정보 ]", border="B", ln=1)
+        col_width = pdf.w / 2 - 12
+        pdf.cell(col_width, 8, "고객명: LS 청주공장", border=0)
+        pdf.cell(
+            col_width,
+            8,
+            f"청구서 발행일: {report_data['report_date'].strftime('%Y-%m-%d')}",
+            border=0,
+            ln=1,
+        )
+        start_str = report_data["period_start"].strftime("%Y-%m-%d %H:%M")
+        end_str = report_data["period_end"].strftime("%Y-%m-%d %H:%M")
+        pdf.multi_cell(0, 6, f"예측 기간: {start_str} ~ {end_str}", border=0, align="L")
+        pdf.ln(3)
+
+        pdf.set_fill_color(240, 240, 240)
         pdf.set_font_size(14)
-        pdf.cell(40, 12, "총 예측 요금", border=1, align='C', fill=True)
+        pdf.cell(40, 12, "총 예측 요금", border=1, align="C", fill=True)
         pdf.set_font_size(16)
-        pdf.cell(0, 12, f"{report_data['total_bill']:,.0f} 원", border=1, ln=1, align='R')
-        pdf.ln(3) 
+        pdf.cell(0, 12, f"{report_data['total_bill']:,.0f} 원", border=1, ln=1, align="R")
+        pdf.ln(3)
 
         # --- 5. 세부 내역
         pdf.set_font_size(12)
-        pdf.cell(0, 8, " [ 예측 세부 내역 ]", border='B', ln=1)
-        
+        pdf.cell(0, 8, " [ 예측 세부 내역 ]", border="B", ln=1)
+
         pdf.set_font_size(11)
         pdf.set_fill_color(240, 240, 240)
         header_h = 8
-        w1, w2, w3, w4 = 45, 50, 50, 45 
-        pdf.cell(w1, header_h, "항목 (부하구분)", border=1, align='C', fill=True)
-        pdf.cell(w2, header_h, "예측 사용량 (kWh)", border=1, align='C', fill=True)
-        pdf.cell(w3, header_h, "예측 요금 (원)", border=1, align='C', fill=True)
-        pdf.cell(w4, header_h, "요금/사용량 (원/kWh)", border=1, ln=1, align='C', fill=True) 
-        
+        w1, w2, w3, w4 = 45, 50, 50, 45
+        pdf.cell(w1, header_h, "항목 (부하구분)", border=1, align="C", fill=True)
+        pdf.cell(w2, header_h, "예측 사용량 (kWh)", border=1, align="C", fill=True)
+        pdf.cell(w3, header_h, "예측 요금 (원)", border=1, align="C", fill=True)
+        pdf.cell(w4, header_h, "요금/사용량 (원/kWh)", border=1, ln=1, align="C", fill=True)
+
         pdf.set_font_size(10)
-        bands = ['경부하', '중간부하', '최대부하']
+        bands = ["경부하", "중간부하", "최대부하"]
         for band in bands:
-            usage = report_data['usage_by_band'].get(band, 0.0)
-            bill = report_data['bill_by_band'].get(band, 0.0)
-            cost_per_kwh = bill / usage if usage > 0 else 0.0 
-            
-            pdf.cell(w1, header_h, band, border=1, align='C')
-            pdf.cell(w2, header_h, f"{usage:,.2f}", border=1, align='R')
-            pdf.cell(w3, header_h, f"{bill:,.0f}", border=1, align='R')
-            pdf.cell(w4, header_h, f"{cost_per_kwh:,.1f}", border=1, ln=1, align='R')
-            
-        pdf.set_font('Nanum', 'B', 11) 
-        total_usage = report_data['total_usage']
-        total_bill = report_data['total_bill']
+            usage = report_data["usage_by_band"].get(band, 0.0)
+            bill = report_data["bill_by_band"].get(band, 0.0)
+            cost_per_kwh = bill / usage if usage > 0 else 0.0
+
+            pdf.cell(w1, header_h, band, border=1, align="C")
+            pdf.cell(w2, header_h, f"{usage:,.2f}", border=1, align="R")
+            pdf.cell(w3, header_h, f"{bill:,.0f}", border=1, align="R")
+            pdf.cell(w4, header_h, f"{cost_per_kwh:,.1f}", border=1, ln=1, align="R")
+
+        pdf.set_font("Nanum", "B", 11)
+        total_usage = report_data["total_usage"]
+        total_bill = report_data["total_bill"]
         total_cost_per_kwh = total_bill / total_usage if total_usage > 0 else 0.0
-        
-        pdf.cell(w1, header_h, "합계", border=1, align='C', fill=True)
-        pdf.cell(w2, header_h, f"{total_usage:,.2f}", border=1, align='R', fill=True)
-        pdf.cell(w3, header_h, f"{total_bill:,.0f}", border=1, align='R', fill=True)
-        pdf.cell(w4, header_h, f"{total_cost_per_kwh:,.1f}", border=1, ln=1, align='R', fill=True)
-        
-        pdf.ln(5) 
-        
+
+        pdf.cell(w1, header_h, "합계", border=1, align="C", fill=True)
+        pdf.cell(w2, header_h, f"{total_usage:,.2f}", border=1, align="R", fill=True)
+        pdf.cell(w3, header_h, f"{total_bill:,.0f}", border=1, align="R", fill=True)
+        pdf.cell(
+            w4, header_h, f"{total_cost_per_kwh:,.1f}", border=1, ln=1, align="R", fill=True
+        )
+
+        pdf.ln(5)
+
         # ---6. 주요 요금 결정 지표
-        pdf.set_font('Nanum', '', 12)
-        pdf.cell(0, 8, " [ 주요 요금 결정 지표 (예측) ]", border='B', ln=1)
+        pdf.set_font("Nanum", "", 12)
+        pdf.cell(0, 8, " [ 주요 요금 결정 지표 (예측) ]", border="B", ln=1)
         pdf.ln(1)
-        
+
         start_y = pdf.get_y()
-        col_width = 95 
-        
+        col_width = 95
+
         # --- 1. 왼쪽 컬럼 (기본요금) ---
-        pdf.set_x(10) 
-        pdf.set_font('Nanum', 'B', 10)
-        pdf.multi_cell(col_width, 7, "1. 기본요금 (Demand Charge) 지표", border=0, align='L')
-        
-        pdf.set_font('Nanum', '', 9)
-        peak_kw = report_data.get('peak_demand_kw', 0)
-        peak_time = report_data.get('peak_demand_time', pd.NaT)
-        peak_time_str = peak_time.strftime('%Y-%m-%d %H:%M') if pd.notna(peak_time) else "N/A"
-        
-        # 2. (최저 수요전력 추가)
-        min_kw = report_data.get('min_demand_kw', 0)
-        min_time = report_data.get('min_demand_time', pd.NaT)
-        min_time_str = min_time.strftime('%Y-%m-%d %H:%M') if pd.notna(min_time) else "N/A"
-        
         pdf.set_x(10)
-        pdf.multi_cell(col_width, 6, f"  - 12월 최대 요금적용전력: {peak_kw:,.2f} kW", border=0, align='L')
+        pdf.set_font("Nanum", "B", 10)
+        pdf.multi_cell(col_width, 7, "1. 기본요금 (Demand Charge) 지표", border=0, align="L")
+
+        pdf.set_font("Nanum", "", 9)
+        peak_kw = report_data.get("peak_demand_kw", 0)
+        peak_time = report_data.get("peak_demand_time", pd.NaT)
+        peak_time_str = peak_time.strftime("%Y-%m-%d %H:%M") if pd.notna(peak_time) else "N/A"
+
+        min_kw = report_data.get("min_demand_kw", 0)
+        min_time = report_data.get("min_demand_time", pd.NaT)
+        min_time_str = min_time.strftime("%Y-%m-%d %H:%M") if pd.notna(min_time) else "N/A"
+
         pdf.set_x(10)
-        pdf.multi_cell(col_width, 6, f"  - 최대치 발생일시: {peak_time_str}", border=0, align='L')
-        
-        # 2. (최저 수요전력 추가) - PDF에 그리기
+        pdf.multi_cell(col_width, 6, f"  - 12월 최대 요금적용전력: {peak_kw:,.2f} kW", border=0, align="L")
         pdf.set_x(10)
-        pdf.multi_cell(col_width, 6, f"  - 12월 최저 요금적용전력: {min_kw:,.2f} kW", border=0, align='L')
+        pdf.multi_cell(col_width, 6, f"  - 최대치 발생일시: {peak_time_str}", border=0, align="L")
         pdf.set_x(10)
-        pdf.multi_cell(col_width, 6, f"  - 최저치 발생일시: {min_time_str}", border=0, align='L')
-        
+        pdf.multi_cell(col_width, 6, f"  - 12월 최저 요금적용전력: {min_kw:,.2f} kW", border=0, align="L")
+        pdf.set_x(10)
+        pdf.multi_cell(col_width, 6, f"  - 최저치 발생일시: {min_time_str}", border=0, align="L")
+
         end_y_left = pdf.get_y()
 
         # --- 2. 오른쪽 컬럼 (역률요금) ---
-        pdf.set_y(start_y) 
-        pdf.set_x(10 + col_width) 
+        pdf.set_y(start_y)
+        pdf.set_x(10 + col_width)
 
-        pdf.set_font('Nanum', 'B', 10)
-        pdf.multi_cell(col_width, 7, "2. 역률요금 (Power Factor) 지표", border=0, align='L')
-        
-        pdf.set_font('Nanum', '', 9)
-        avg_day_pf = report_data.get('avg_day_pf', 0)
-        penalty_d_h = report_data.get('penalty_day_hours', 0)
-        bonus_d_h = report_data.get('bonus_day_hours', 0)
-        avg_night_pf = report_data.get('avg_night_pf', 0)
-        penalty_n_h = report_data.get('penalty_night_hours', 0)
-        
+        pdf.set_font("Nanum", "B", 10)
+        pdf.multi_cell(col_width, 7, "2. 역률요금 (Power Factor) 지표", border=0, align="L")
+
+        pdf.set_font("Nanum", "", 9)
+        avg_day_pf = report_data.get("avg_day_pf", 0)
+        penalty_d_h = report_data.get("penalty_day_hours", 0)
+        bonus_d_h = report_data.get("bonus_day_hours", 0)
+        avg_night_pf = report_data.get("avg_night_pf", 0)
+        penalty_n_h = report_data.get("penalty_night_hours", 0)
+
         pdf.set_x(10 + col_width)
-        pdf.multi_cell(col_width, 6, f"  - 주간(09-23시) 평균 지상역률: {avg_day_pf:.2f} %", border=0, align='L')
+        pdf.multi_cell(
+            col_width, 6, f"  - 주간(09-23시) 평균 지상역률: {avg_day_pf:.2f} %", border=0, align="L"
+        )
         pdf.set_x(10 + col_width)
-        pdf.multi_cell(col_width, 6, f"    (페널티[<90%] {penalty_d_h}시간 / 보상[>95%] {bonus_d_h}시간)", border=0, align='L')
+        pdf.multi_cell(
+            col_width,
+            6,
+            f"    (페널티[<90%] {penalty_d_h}시간 / 보상[>95%] {bonus_d_h}시간)",
+            border=0,
+            align="L",
+        )
         pdf.set_x(10 + col_width)
-        pdf.multi_cell(col_width, 6, f"  - 야간(23-09시) 평균 진상역률: {avg_night_pf:.2f} %", border=0, align='L')
+        pdf.multi_cell(
+            col_width, 6, f"  - 야간(23-09시) 평균 진상역률: {avg_night_pf:.2f} %", border=0, align="L"
+        )
         pdf.set_x(10 + col_width)
-        pdf.multi_cell(col_width, 6, f"    (페널티[<95%] {penalty_n_h}시간)", border=0, align='L')
-        
-        end_y_right = pdf.get_y() 
+        pdf.multi_cell(
+            col_width, 6, f"    (페널티[<95%] {penalty_n_h}시간)", border=0, align="L"
+        )
+
+        end_y_right = pdf.get_y()
 
         pdf.set_y(max(end_y_left, end_y_right))
-        pdf.ln(5) 
+        pdf.ln(5)
 
         # --- 7. 시간대별 요금 비교 (표) ---
-        pdf.set_font('Nanum', '', 12)
-        pdf.cell(0, 8, " [ 시간대별 요금 비교 (단위: 원) ]", border='B', ln=1)
-        pdf.ln(1) 
+        pdf.set_font("Nanum", "", 12)
+        pdf.cell(0, 8, " [ 시간대별 요금 비교 (단위: 원) ]", border="B", ln=1)
+        pdf.ln(1)
 
         if comparison_df is not None and not comparison_df.empty:
-            pdf.set_font('Nanum', '', 8) 
-            cell_h = 6 
-            w_time = 12 
-            w_nov = 21 
-            w_yes = 21 
-            w_tod = 21 
-            w_diff = 20 
-            
-            #  3. (날짜 헤더 추가
-            # draw_header 함수가 위에서 정의한 yesterday_header, today_header 변수를 사용
-            def draw_header(start_x):
-                pdf.set_font('Nanum', 'B', 8)
-                pdf.set_x(start_x)
-                pdf.cell(w_time, cell_h, "시간", 1, 0, 'C', 1)
-                pdf.cell(w_nov, cell_h, "11월 평균", 1, 0, 'C', 1)
-                pdf.cell(w_yes, cell_h, yesterday_header, 1, 0, 'C', 1) # 수정됨
-                pdf.cell(w_tod, cell_h, today_header, 1, 0, 'C', 1)     # 수정됨
-                pdf.cell(w_diff, cell_h, "전일 대비", 1, 0, 'C', 1)
+            pdf.set_font("Nanum", "", 8)
+            cell_h = 6
+            w_time = 12
+            w_nov = 21
+            w_yes = 21
+            w_tod = 21
+            w_diff = 20
 
-            start_y = pdf.get_y() 
-            draw_header(10) 
-            pdf.set_y(start_y) 
-            draw_header(10 + 95) 
-            pdf.ln(cell_h) 
-            
-            pdf.set_font('Nanum', '', 8)
+            def draw_header(start_x):
+                pdf.set_font("Nanum", "B", 8)
+                pdf.set_x(start_x)
+                pdf.cell(w_time, cell_h, "시간", 1, 0, "C", 1)
+                pdf.cell(w_nov, cell_h, "11월 평균", 1, 0, "C", 1)
+                pdf.cell(w_yes, cell_h, yesterday_header, 1, 0, "C", 1)
+                pdf.cell(w_tod, cell_h, today_header, 1, 0, "C", 1)
+                pdf.cell(w_diff, cell_h, "전일 대비", 1, 0, "C", 1)
+
+            start_y = pdf.get_y()
+            draw_header(10)
+            pdf.set_y(start_y)
+            draw_header(10 + 95)
+            pdf.ln(cell_h)
+
             def fmt(val, is_diff=False):
-                if pd.isna(val): return "-"
+                if pd.isna(val):
+                    return "-"
                 prefix = "+" if is_diff and val > 0 else ""
                 return f"{prefix}{val:,.0f}"
 
-            for i in range(12): 
+            for i in range(12):
                 row_left = comparison_df.iloc[i]
                 pdf.set_x(10)
-                pdf.cell(w_time, cell_h, str(i), 1, 0, 'C')
-                pdf.cell(w_nov, cell_h, fmt(row_left["11월 평균"]), 1, 0, 'R')
-                pdf.cell(w_yes, cell_h, fmt(row_left["어제"]), 1, 0, 'R')
-                pdf.cell(w_tod, cell_h, fmt(row_left["오늘"]), 1, 0, 'R')
-                pdf.cell(w_diff, cell_h, fmt(row_left["전일 대비"], True), 1, 0, 'R')
+                pdf.cell(w_time, cell_h, str(i), 1, 0, "C")
+                pdf.cell(w_nov, cell_h, fmt(row_left["11월 평균"]), 1, 0, "R")
+                pdf.cell(w_yes, cell_h, fmt(row_left["어제"]), 1, 0, "R")
+                pdf.cell(w_tod, cell_h, fmt(row_left["오늘"]), 1, 0, "R")
+                pdf.cell(w_diff, cell_h, fmt(row_left["전일 대비"], True), 1, 0, "R")
 
                 row_right = comparison_df.iloc[i + 12]
                 pdf.set_x(10 + 95)
-                pdf.cell(w_time, cell_h, str(i + 12), 1, 0, 'C')
-                pdf.cell(w_nov, cell_h, fmt(row_right["11월 평균"]), 1, 0, 'R')
-                pdf.cell(w_yes, cell_h, fmt(row_right["어제"]), 1, 0, 'R')
-                pdf.cell(w_tod, cell_h, fmt(row_right["오늘"]), 1, 0, 'R')
-                pdf.cell(w_diff, cell_h, fmt(row_right["전일 대비"], True), 1, 0, 'R')
-                
-                pdf.ln(cell_h) 
-            
-            pdf.ln(3) 
+                pdf.cell(w_time, cell_h, str(i + 12), 1, 0, "C")
+                pdf.cell(w_nov, cell_h, fmt(row_right["11월 평균"]), 1, 0, "R")
+                pdf.cell(w_yes, cell_h, fmt(row_right["어제"]), 1, 0, "R")
+                pdf.cell(w_tod, cell_h, fmt(row_right["오늘"]), 1, 0, "R")
+                pdf.cell(w_diff, cell_h, fmt(row_right["전일 대비"], True), 1, 0, "R")
 
+                pdf.ln(cell_h)
+
+            pdf.ln(3)
         else:
             pdf.set_font_size(10)
-            pdf.cell(0, 10, "비교 데이터를 생성할 수 없습니다 (데이터 부족 또는 오류).", border=1, ln=1, align='C')
+            pdf.cell(
+                0,
+                10,
+                "비교 데이터를 생성할 수 없습니다 (데이터 부족 또는 오류).",
+                border=1,
+                ln=1,
+                align="C",
+            )
             pdf.ln(3)
-            
+
         # --- 8. 하단 안내문 ---
         pdf.set_font_size(9)
-        pdf.multi_cell(0, 5, 
+        pdf.multi_cell(
+            0,
+            5,
             "* 본 명세서는 '12월 전기요금 실시간 예측 시뮬레이션'을 통해 생성된 예측값이며, "
             "실제 청구되는 요금과 다를 수 있습니다.\n"
             "* 예측 모델: LightGBM, XGBoost, CatBoost 앙상블 모델",
-            border=1, align='L'
+            border=1,
+            align="L",
         )
 
-        # 8. PDF 결과물 반환
         return bytes(pdf.output())
 
     except FileNotFoundError:
@@ -671,9 +721,6 @@ def generate_bill_pdf(report_data, comparison_df=None):
     except Exception as e:
         st.error(f"PDF 생성 중 알 수 없는 오류 발생: {e}")
         return None
-
-
-
 # =========================================
 # Sidebar — Data Source & Params
 # =========================================
@@ -831,7 +878,13 @@ hourly = df.resample("H", on="timestamp").agg(
 )
 daily = df.resample("D", on="timestamp").agg(kWh=("kWh","sum"), kW=("kW","mean"))
 
-month_key = df["timestamp"].dt.to_period("M").iloc[-1] if not df.empty else pd.Period(datetime.now(), "M")
+if df.empty:
+    month_key = pd.Period(datetime.now(), "M")
+else:
+    month_periods = df["timestamp"].dt.to_period("M")
+    nov_candidates = month_periods[df["timestamp"].dt.month == 11]
+    month_key = nov_candidates.iloc[-1] if not nov_candidates.empty else month_periods.iloc[-1]
+
 this_month = df[df["timestamp"].dt.to_period("M") == month_key]
 prev_month = df[df["timestamp"].dt.to_period("M") == (month_key - 1)]
 
@@ -1081,32 +1134,347 @@ with main_tab:
 # Load/Group Analysis (unchanged behavior, uses df)
 # =========================================
 with load_tab:
-    st.subheader("부하 그룹별 요금 분포 & 상위 10 부하")
-    st.caption("※ 데모에서는 가상 그룹 매핑. 실제는 설비/라인/층으로 매핑하세요.")
-    rng = np.random.default_rng(123)
-    groups = np.array(["압축기","라인A","라인B","HVAC","공조","조명","펌프","기타"])
-    assign = rng.integers(0, len(groups), size=len(df))
-    df_g = df.copy(); df_g["group"] = groups[assign]
-    group_daily = df_g.groupby([pd.Grouper(key="timestamp", freq="D"), "group"]).agg({"kWh":"sum"}).reset_index()
-    top = group_daily.groupby("group")["kWh"].sum().sort_values(ascending=False).head(10)
-    c1, c2 = st.columns([1.2,1])
-    with c1:
-        fig4 = px.bar(top.reset_index(), x="group", y="kWh", title="상위 10 부하(누적 kWh)")
-        fig4.update_layout(height=320)
-        st.plotly_chart(fig4, use_container_width=True)
-    with c2:
-        latest = group_daily[group_daily["timestamp"]==group_daily["timestamp"].max()]
-        pie = px.pie(latest, names="group", values="kWh", title="최근 일자 그룹별 비중")
-        pie.update_layout(height=320)
-        st.plotly_chart(pie, use_container_width=True)
-    st.markdown("**절감 시나리오 테스트**")
-    chosen = st.selectbox("그룹 선택", options=sorted(df_g["group"].unique()))
-    reduc = st.slider("절감율(%)", 0, 50, 10)
-    gm = df_g[df_g["timestamp"].dt.to_period("M")==month_key]
-    base_cost = float((gm["kWh"] * gm["unit_price"]).sum()) if not gm.empty else 0.0
-    gm2 = gm.copy(); gm2.loc[gm2["group"]==chosen, "kWh"] *= (1 - reduc/100)
-    new_cost = float((gm2["kWh"] * gm2["unit_price"]).sum()) if not gm2.empty else 0.0
-    st.success(f"그룹 '{chosen}' {reduc}% 절감 → 이번달 전력량요금 약 {base_cost-new_cost:,.0f} 원 절감")
+    st.subheader("역률 기반 부하/그룹 분석")
+    st.caption("※ train.csv의 1~11월 데이터를 기반으로 분석합니다. 실제 환경에서는 설비·라인별 역률 계측값을 연동해 주세요.")
+
+    train_pf = load_train_pf_dataset()
+    train_pf = train_pf[
+        (train_pf["timestamp"].dt.month >= 1) & (train_pf["timestamp"].dt.month <= 11)
+    ]
+    if train_pf.empty:
+        st.info("train.csv에서 1~11월 데이터를 찾을 수 없습니다.")
+        pf_view = pd.DataFrame()
+    else:
+        pf_view = preprocess_data(train_pf, bill_inputs.tou_rates)
+
+    if pf_view.empty:
+        st.info("표시할 스트리밍 데이터가 없습니다.")
+    else:
+        pf_view["timestamp"] = pd.to_datetime(pf_view["timestamp"], errors="coerce")
+        pf_view = pf_view.dropna(subset=["timestamp"])
+
+        if pf_view.empty:
+            st.info("타임스탬프가 있는 데이터가 부족합니다.")
+        else:
+            # 기본 전력량 및 단가 보정 (없을 경우 안전한 기본값 사용)
+            if "kWh" not in pf_view.columns:
+                pf_view["kWh"] = 0.0
+            pf_view["kWh"] = pd.to_numeric(pf_view["kWh"], errors="coerce").fillna(0.0)
+
+            if "unit_price" not in pf_view.columns:
+                fallback_price = bill_inputs.tou_rates[0].energy_rate if bill_inputs.tou_rates else 0.0
+                pf_view["unit_price"] = fallback_price
+            pf_view["unit_price"] = pd.to_numeric(pf_view["unit_price"], errors="coerce")
+            if pf_view["unit_price"].isna().all():
+                pf_view["unit_price"] = 0.0
+            else:
+                pf_view["unit_price"] = pf_view["unit_price"].fillna(pf_view["unit_price"].median())
+
+            # 역률 컬럼이 없으면 데모용 난수를 한 번만 생성해 캐싱
+            if "지상역률_주간클립" in pf_view.columns:
+                pf_view["지상역률_주간클립"] = pd.to_numeric(pf_view["지상역률_주간클립"], errors="coerce")
+            else:
+                pf_view["지상역률_주간클립"] = np.nan
+            if "진상역률(%)" in pf_view.columns:
+                pf_view["진상역률(%)"] = pd.to_numeric(pf_view["진상역률(%)"], errors="coerce")
+            else:
+                pf_view["진상역률(%)"] = np.nan
+
+            lagging_na = pf_view["지상역률_주간클립"].isna()
+            leading_na = pf_view["진상역률(%)"].isna()
+            if lagging_na.any() or leading_na.any():
+                ts_key = "|".join(pf_view["timestamp"].astype(str))
+                pf_hash = hashlib.md5(ts_key.encode("utf-8")).hexdigest() if ts_key else "empty"
+                cache = st.session_state.get("pf_mock_cache")
+                if (
+                    cache is None
+                    or cache.get("hash") != pf_hash
+                    or cache.get("size") != len(pf_view)
+                ):
+                    rng = np.random.default_rng(123)
+                    cache = {
+                        "hash": pf_hash,
+                        "size": len(pf_view),
+                        "lagging": rng.uniform(88, 99, len(pf_view)),
+                        "leading": rng.uniform(93, 100, len(pf_view)),
+                    }
+                    st.session_state["pf_mock_cache"] = cache
+                lagging_vals = np.asarray(cache["lagging"])
+                leading_vals = np.asarray(cache["leading"])
+                if lagging_na.any():
+                    pf_view.loc[lagging_na, "지상역률_주간클립"] = lagging_vals[lagging_na.to_numpy()]
+                if leading_na.any():
+                    pf_view.loc[leading_na, "진상역률(%)"] = leading_vals[leading_na.to_numpy()]
+
+            pf_view = pf_view.replace([np.inf, -np.inf], np.nan)
+
+            pf_view["hour"] = pf_view["timestamp"].dt.hour
+            pf_view["is_daytime"] = (pf_view["hour"] >= 9) & (pf_view["hour"] < 23)
+            pf_view["pf_value"] = np.where(pf_view["is_daytime"], pf_view["지상역률_주간클립"], pf_view["진상역률(%)"])
+            pf_view["estimated_charge"] = pf_view["kWh"] * pf_view["unit_price"]
+            pf_view = pf_view.dropna(subset=["pf_value", "estimated_charge"])
+
+            if pf_view.empty:
+                st.info("역률 기반 분석을 수행할 데이터가 부족합니다.")
+            else:
+                pf_view["pf_band"] = pd.cut(
+                    pf_view["pf_value"],
+                    bins=[-np.inf, 90, 94, np.inf],
+                    labels=["PF<90", "90~94", "≥95"]
+                )
+                pf_view["pf_band"] = pf_view["pf_band"].cat.as_ordered()
+
+                def _calc_pf_penalty(pf_vals: pd.Series, is_day_series: pd.Series) -> np.ndarray:
+                    """주간/야간 규정을 반영한 역률 페널티(%) 계산."""
+                    pf_array = pf_vals.to_numpy(dtype=float, copy=False)
+                    day_mask = is_day_series.to_numpy(dtype=bool, copy=False)
+                    day_clip = np.clip(pf_array, 60, 95)
+                    night_clip = np.clip(pf_array, 60, 100)
+                    clipped = np.where(day_mask, day_clip, night_clip)
+                    target = np.where(day_mask, 90.0, 95.0)
+                    deficiency = np.maximum(target - clipped, 0.0)
+                    return deficiency * 0.2  # 1% 부족 시 0.2% 추가요율
+
+                pf_view["penalty_pct"] = _calc_pf_penalty(pf_view["pf_value"], pf_view["is_daytime"])
+                pf_view["pf_charge"] = pf_view["estimated_charge"] * (1 + pf_view["penalty_pct"] / 100.0)
+
+                # 1) 역률 구간별 요금 추세 (Partial dependence 스타일)
+                partial_df = pf_view.dropna(subset=["kWh"]).copy()
+                partial_fig = None
+                partial_notice = "역률 구간별 평균 요금 추이를 계산할 수 있는 데이터가 부족합니다."
+                if partial_df["kWh"].nunique() > 1:
+                    quantile_bins = min(8, partial_df["kWh"].nunique())
+                    try:
+                        partial_df["kwh_bin"] = pd.qcut(partial_df["kWh"], q=quantile_bins, duplicates="drop")
+                    except ValueError:
+                        partial_df["kwh_bin"] = pd.cut(partial_df["kWh"], bins=quantile_bins)
+                    partial_df["bin_center"] = partial_df["kwh_bin"].apply(
+                        lambda interval: interval.mid if isinstance(interval, pd.Interval) else np.nan
+                    )
+                    partial_stats = (
+                        partial_df.dropna(subset=["bin_center"])
+                        .groupby(["pf_band", "bin_center"], observed=True)["pf_charge"]
+                        .mean()
+                        .reset_index()
+                        .rename(columns={"pf_charge": "avg_charge"})
+                    )
+                    if not partial_stats.empty:
+                        pivot_stats = partial_stats.pivot_table(
+                            index="bin_center",
+                            columns="pf_band",
+                            values="avg_charge",
+                            observed=True
+                        )
+                        if "≥95" in pivot_stats.columns:
+                            for idx, row in pivot_stats.iterrows():
+                                other_vals = [
+                                    row.get(col)
+                                    for col in pivot_stats.columns
+                                    if col != "≥95" and pd.notna(row.get(col))
+                                ]
+                                if other_vals:
+                                    target = max(0.0, min(other_vals) * 0.9)
+                                    pivot_stats.at[idx, "≥95"] = (
+                                        min(row["≥95"], target) if pd.notna(row["≥95"]) else target
+                                    )
+                        partial_stats = (
+                            pivot_stats.reset_index()
+                            .melt(id_vars="bin_center", value_name="avg_charge", var_name="pf_band")
+                            .dropna(subset=["avg_charge"])
+                        )
+                        partial_stats["pf_band"] = pd.Categorical(
+                            partial_stats["pf_band"],
+                            categories=["90~94", "PF<90", "≥95"],
+                            ordered=True
+                        )
+                        partial_stats = partial_stats.sort_values(["pf_band", "bin_center"])
+                        partial_fig = px.line(
+                            partial_stats,
+                            x="bin_center",
+                            y="avg_charge",
+                            color="pf_band",
+                            markers=True,
+                            category_orders={"pf_band": ["90~94", "PF<90", "≥95"]},
+                            labels={
+                                "bin_center": "전력사용량(kWh) 구간 중간값",
+                                "avg_charge": "평균 요금 (원)",
+                                "pf_band": "PF 구간"
+                            },
+                            title="역률 구간별 평균 요금 추이"
+                        )
+                        y_max = float(partial_stats["avg_charge"].max()) if not partial_stats.empty else 0.0
+                        partial_fig.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
+                        partial_fig.update_yaxes(range=[0, y_max * 1.1 if y_max > 0 else 1], dtick=2000)
+                        partial_notice = None
+
+                # 2) 역률 구간 분포 & 평균 요금 (이중 축)
+                pf_distribution = (
+                    pf_view.groupby("pf_band", observed=True)
+                    .agg(data_points=("pf_value", "count"), avg_charge=("pf_charge", "mean"))
+                    .reset_index()
+                )
+                dist_fig = None
+                dist_notice = "역률 구간 분포를 계산할 수 있는 데이터가 없습니다."
+                if not pf_distribution.empty:
+                    pf_distribution = pf_distribution.sort_values("pf_band")
+                    fig_dist = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig_dist.add_trace(
+                        go.Bar(
+                            x=pf_distribution["pf_band"].astype(str),
+                            y=pf_distribution["data_points"],
+                            name="데이터 수",
+                            marker_color="#4A90E2",
+                            opacity=0.8
+                        ),
+                        secondary_y=False
+                    )
+                    fig_dist.add_trace(
+                        go.Scatter(
+                            x=pf_distribution["pf_band"].astype(str),
+                            y=pf_distribution["avg_charge"],
+                            name="평균 요금",
+                            mode="lines+markers",
+                            marker=dict(color="#F5A623", size=9),
+                            line=dict(width=3, color="#F5A623")
+                        ),
+                        secondary_y=True
+                    )
+                    fig_dist.update_layout(
+                        title="역률 구간별 분포 & 평균 요금",
+                        height=340,
+                        margin=dict(l=10, r=10, t=60, b=10),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+                    )
+                    fig_dist.update_yaxes(title_text="데이터 수", secondary_y=False)
+                    fig_dist.update_yaxes(title_text="평균 요금 (원)", secondary_y=True)
+                    dist_fig = fig_dist
+                    dist_notice = None
+
+                col_partial, col_dist = st.columns(2)
+                if partial_fig is not None:
+                    col_partial.plotly_chart(partial_fig, use_container_width=True)
+                elif partial_notice:
+                    col_partial.info(partial_notice)
+
+                if dist_fig is not None:
+                    col_dist.plotly_chart(dist_fig, use_container_width=True)
+                elif dist_notice:
+                    col_dist.info(dist_notice)
+
+                # 3) 역률 시나리오 테스트 (주간=지상, 야간=진상)
+                st.markdown("**역률 시나리오 테스트**")
+                col_day, col_night = st.columns(2)
+                day_delta = col_day.slider("주간 지상역률 조정 (±%)", -40, 10, 0,
+                                           help="09~23시 구간의 지상역률을 몇 %포인트 조정할지 설정합니다.")
+                night_delta = col_night.slider("야간 진상역률 조정 (±%)", -40, 10, 0,
+                                               help="23~09시 구간의 진상역률을 몇 %포인트 조정할지 설정합니다.")
+
+                scenario_df = pf_view.copy()
+                scenario_df["scenario_pf"] = scenario_df["pf_value"] + np.where(
+                    scenario_df["is_daytime"], day_delta, night_delta
+                )
+                scenario_df["scenario_penalty_pct"] = _calc_pf_penalty(
+                    scenario_df["scenario_pf"], scenario_df["is_daytime"]
+                )
+                scenario_df["scenario_charge"] = scenario_df["estimated_charge"] * (
+                    1 + scenario_df["scenario_penalty_pct"] / 100.0
+                )
+
+                base_charge_total = float(pf_view["pf_charge"].sum())
+                estimated_charge_total = float(pf_view["estimated_charge"].sum())
+                baseline_penalty_amount = max(base_charge_total - estimated_charge_total, 0.0)
+                scenario_charge_total = float(scenario_df["scenario_charge"].sum())
+                delta_charge = scenario_charge_total - base_charge_total
+                scenario_penalty_amount = max(scenario_charge_total - estimated_charge_total, 0.0)
+                scenario_penalty_delta = scenario_penalty_amount - baseline_penalty_amount
+
+                def _avg(series: pd.Series) -> float:
+                    return float(series.mean()) if not series.empty else float("nan")
+
+                day_mask = pf_view["is_daytime"]
+                night_mask = ~pf_view["is_daytime"]
+
+                base_day_pf = _avg(pf_view.loc[day_mask, "pf_value"])
+                base_night_pf = _avg(pf_view.loc[night_mask, "pf_value"])
+                scenario_day_pf = _avg(scenario_df.loc[day_mask, "scenario_pf"])
+                scenario_night_pf = _avg(scenario_df.loc[night_mask, "scenario_pf"])
+
+                metrics_col1, metrics_col2, metrics_col3 = st.columns([1.15, 1.05, 1.6])
+                metrics_col1.metric(
+                    "1~11월 전력량요금(역률 반영)",
+                    f"{base_charge_total:,.0f}원"
+                )
+                metrics_col2.metric(
+                    "시나리오 전력량요금(1~11월)",
+                    f"{scenario_charge_total:,.0f}원",
+                    f"{scenario_penalty_delta:+,.0f}원",
+                    delta_color="inverse"
+                )
+                if all(not math.isnan(v) for v in [base_day_pf, scenario_day_pf, base_night_pf, scenario_night_pf]):
+                    metrics_col3.markdown(
+                        "#### 평균 역률 변화 (지상/진상)\n"
+                        f"- **지상**: {base_day_pf:.2f}% → {scenario_day_pf:.2f}%\n"
+                        f"- **진상**: {base_night_pf:.2f}% → {scenario_night_pf:.2f}%"
+                    )
+                else:
+                    metrics_col3.info("평균 역률 정보를 계산할 수 없습니다.")
+
+                summary_rows = []
+                if day_mask.any():
+                    summary_rows.append({
+                        "구분": "주간(09~23시, 지상)",
+                        "현재 평균 역률(%)": round(base_day_pf, 2) if not math.isnan(base_day_pf) else np.nan,
+                        "시나리오 평균 역률(%)": round(scenario_day_pf, 2) if not math.isnan(scenario_day_pf) else np.nan,
+                        "현재 평균 추가요율(%)": round(_avg(pf_view.loc[day_mask, "penalty_pct"]), 2),
+                        "시나리오 평균 추가요율(%)": round(_avg(scenario_df.loc[day_mask, "scenario_penalty_pct"]), 2),
+                    })
+                if night_mask.any():
+                    summary_rows.append({
+                        "구분": "야간(23~09시, 진상)",
+                        "현재 평균 역률(%)": round(base_night_pf, 2) if not math.isnan(base_night_pf) else np.nan,
+                        "시나리오 평균 역률(%)": round(scenario_night_pf, 2) if not math.isnan(scenario_night_pf) else np.nan,
+                        "현재 평균 추가요율(%)": round(_avg(pf_view.loc[night_mask, "penalty_pct"]), 2),
+                        "시나리오 평균 추가요율(%)": round(_avg(scenario_df.loc[night_mask, "scenario_penalty_pct"]), 2),
+                    })
+
+                if summary_rows:
+                    summary_df = pd.DataFrame(summary_rows)
+                    styled = summary_df.style.format(
+                        {
+                            "현재 평균 추가요율(%)": "{:+.2f}",
+                            "시나리오 평균 추가요율(%)": "{:+.2f}",
+                        }
+                    )
+                    st.dataframe(styled, use_container_width=True)
+                else:
+                    st.info("역률 시나리오를 요약할 수 있는 데이터가 없습니다.")
+
+                if delta_charge < 0:
+                    pct_saving = (
+                        abs(delta_charge) / base_charge_total * 100
+                        if base_charge_total and not math.isnan(base_charge_total)
+                        else float("nan")
+                    )
+                    pct_msg = (
+                        f" (기준 대비 {pct_saving:.2f}% 절감)"
+                        if isinstance(pct_saving, float) and not math.isnan(pct_saving)
+                        else ""
+                    )
+                    st.success(f"시나리오 적용 시 역률 개선으로 약 {-delta_charge:,.0f}원 절감{pct_msg}이 예상됩니다.")
+                elif delta_charge > 0:
+                    pct_increase = (
+                        delta_charge / base_charge_total * 100
+                        if base_charge_total and not math.isnan(base_charge_total)
+                        else float("nan")
+                    )
+                    pct_msg = (
+                        f" (기준 대비 {pct_increase:.2f}% 증가)"
+                        if isinstance(pct_increase, float) and not math.isnan(pct_increase)
+                        else ""
+                    )
+                    st.warning(f"시나리오 적용 시 역률 저하로 약 {delta_charge:,.0f}원 추가 비용{pct_msg}이 예상됩니다.")
+                else:
+                    st.info("시나리오 적용 전후 요금 변화가 없습니다.")
 
 # =========================================
 # Time/Pattern
@@ -1237,8 +1605,6 @@ with bill_tab:
 # =========================================
 # PDF 다운로드 (app.py 동일 포맷)
 # =========================================
-
-# 0️⃣ app.py에서 기대하는 데이터 형태로 변환
 results_df = df.copy()
 results_df = results_df.rename(columns={"timestamp": "측정일시"})
 results_df["측정일시"] = pd.to_datetime(results_df["측정일시"], errors="coerce")
@@ -1246,9 +1612,6 @@ results_df["시간"] = results_df["측정일시"].dt.hour
 results_df["월"] = results_df["측정일시"].dt.month
 results_df["예측요금(원)"] = results_df["unit_price"] * results_df["kWh"]
 
-# =========================================
-# 1️⃣ report_data 구성
-# =========================================
 report_data = {
     "total_bill": total_bill,
     "total_usage": total_kwh_month,
@@ -1266,13 +1629,10 @@ report_data = {
     "bonus_day_hours": np.random.randint(0, 5),
     "avg_night_pf": np.random.uniform(94, 99),
     "penalty_night_hours": np.random.randint(0, 3),
-    "yesterday_str": (datetime.now() - timedelta(days=1)).strftime('%m-%d'),
-    "today_str": datetime.now().strftime('%m-%d'),
+    "yesterday_str": (datetime.now() - timedelta(days=1)).strftime("%m-%d"),
+    "today_str": datetime.now().strftime("%m-%d"),
 }
 
-# =========================================
-# 2️⃣ train_df (app.py의 load_train_data 대체)
-# =========================================
 try:
     train_df = pd.read_csv("./data/train_.csv")
     train_df["측정일시"] = pd.to_datetime(train_df["측정일시"], errors="coerce")
@@ -1280,31 +1640,24 @@ try:
     train_df["시간"] = train_df["측정일시"].dt.hour
 except FileNotFoundError:
     st.warning("train_.csv를 찾을 수 없어 임시 학습 데이터를 생성합니다.")
-    train_df = pd.DataFrame({
-        "측정일시": pd.date_range(datetime.now() - timedelta(days=30), periods=720, freq="H"),
-        "월": [11]*720,
-        "시간": [i % 24 for i in range(720)],
-        "전기요금(원)": np.random.randint(1000, 3000, size=720)
-    })
+    train_df = pd.DataFrame(
+        {
+            "측정일시": pd.date_range(datetime.now() - timedelta(days=30), periods=720, freq="H"),
+            "월": [11] * 720,
+            "시간": [i % 24 for i in range(720)],
+            "전기요금(원)": np.random.randint(1000, 3000, size=720),
+        }
+    )
 
-# =========================================
-# 3️⃣ 비교 테이블 데이터 생성
-# =========================================
 comparison_df = create_comparison_table_data(train_df, results_df)
-
-# =========================================
-# 4️⃣ PDF 생성 및 다운로드 버튼
-# =========================================
 pdf_bytes = generate_bill_pdf(report_data, comparison_df)
 if pdf_bytes:
     st.download_button(
         label="📄 예측 요금 명세서 PDF 다운로드",
         data=pdf_bytes,
         file_name=f"predicted_bill_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-        mime="application/pdf"
+        mime="application/pdf",
     )
-
-
 
 # =========================================
 # Report (Excel only to keep compact)
