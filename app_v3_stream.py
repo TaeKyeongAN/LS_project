@@ -911,8 +911,8 @@ st.divider()
 # =========================================
 # Tabs
 # =========================================
-main_tab, load_tab, time_tab, alert_tab, bill_tab, report_tab = st.tabs(
-    ["메인 대시보드", "부하/그룹 분석", "시간대/패턴", "피크 & 알람/시뮬레이션", "한전 고지서/요금", "리포트"]
+main_tab, feature_tab, load_tab, alert_tab, bill_tab, report_tab = st.tabs(
+    ["메인 대시보드", "피처 분석", "부하/그룹 분석", "피크 & 알람/시뮬레이션", "한전 고지서/요금", "리포트"]
 )
 
 # =========================================
@@ -1476,23 +1476,308 @@ with load_tab:
                 else:
                     st.info("시나리오 적용 전후 요금 변화가 없습니다.")
 
+
 # =========================================
-# Time/Pattern
+# Feature Analysis (정규화 + 패턴 분석 통합)
 # =========================================
-with time_tab:
-    st.subheader("시간대별 사용량 & 단가")
-    h_agg = df.groupby(["hour","TOU"]).agg(kWh=("kWh","mean"), unit_price=("unit_price","mean")).reset_index()
-    fig5 = px.bar(h_agg, x="hour", y="kWh", color="TOU", title="시간대별 평균 kWh")
-    st.plotly_chart(fig5, use_container_width=True)
-    fig6 = px.line(h_agg.sort_values("hour"), x="hour", y="unit_price", title="시간대별 평균 단가 (원/kWh)")
-    st.plotly_chart(fig6, use_container_width=True)
-    st.subheader("요일×시간대 히트맵 (평균 kWh)")
-    heat = df.groupby(["weekday","hour"])["kWh"].mean().reset_index()
-    weekday_map = {0:"월",1:"화",2:"수",3:"목",4:"금",5:"토",6:"일"}
-    heat["weekday_name"] = heat["weekday"].map(weekday_map)
-    fig7 = px.density_heatmap(heat, x="hour", y="weekday_name", z="kWh",
-                              color_continuous_scale="Viridis", title="요일-시간대 평균 kWh")
-    st.plotly_chart(fig7, use_container_width=True)
+from sklearn.preprocessing import MinMaxScaler
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+
+with feature_tab:
+    # 내부 소탭 구성
+    base_tab, pattern_tab = st.tabs(["기본 피처별 추이 분석", "패턴 분석"])
+
+    # ============================================================
+    # 기본 피처별 추이 분석
+    # ============================================================
+    with base_tab:
+        st.subheader("기본 피처별 추이 분석")
+
+        # --------------------------
+        # 데이터 로드
+        # --------------------------
+        train = pd.read_csv("./data/train_time_season.csv", encoding="utf-8-sig")
+        train["측정일시"] = pd.to_datetime(train["측정일시"], errors="coerce")
+
+        # --------------------------
+        # 리샘플링 기준 선택
+        # --------------------------
+        resample_option = st.radio(
+            "표시 단위 선택:",
+            ("일별", "주별", "월별"),
+            horizontal=True
+        )
+
+        if resample_option == "일별":
+            train_resampled = train.resample("D", on="측정일시").mean(numeric_only=True).interpolate(method="time").reset_index()
+            title_suffix = "일별 평균"
+        elif resample_option == "주별":
+            train_resampled = train.resample("W", on="측정일시").mean(numeric_only=True).reset_index()
+            title_suffix = "주별 평균"
+        else:
+            train_resampled = train.resample("M", on="측정일시").mean(numeric_only=True).reset_index()
+            title_suffix = "월별 평균"
+
+        # --------------------------
+        # 피처 선택
+        # --------------------------
+        feature_cols = [
+            "전력사용량(kWh)",
+            "지상무효전력량(kVarh)",
+            "진상무효전력량(kVarh)",
+            "탄소배출량(tCO2)",
+            "지상역률(%)",
+            "진상역률(%)"
+        ]
+
+        selected_feats = st.multiselect(
+            "전기요금과 함께 비교할 피처를 선택하세요:",
+            options=feature_cols,
+            default=[],
+            help="전기요금(원)은 기본으로 표시됩니다. 선택한 피처는 동일한 시간축에서 함께 표시됩니다."
+        )
+
+        # --------------------------
+        # 정규화 (0~1 스케일링)
+        # --------------------------
+        cols_to_scale = ["전기요금(원)"] + selected_feats if selected_feats else ["전기요금(원)"]
+
+        scaler = MinMaxScaler()
+        scaled = scaler.fit_transform(train_resampled[cols_to_scale])
+        scaled_df = pd.DataFrame(scaled, columns=cols_to_scale)
+        scaled_df["측정일시"] = train_resampled["측정일시"]
+
+        # --------------------------
+        # 그래프 구성
+        # --------------------------
+        fig = go.Figure()
+        color_palette = ["#FF6B6B", "#5AC8FA", "#FFCC00", "#34C759", "#AF52DE", "#FF9500", "#5856D6"]
+
+        for i, col in enumerate(cols_to_scale):
+            fig.add_trace(go.Scatter(
+                x=scaled_df["측정일시"],
+                y=scaled_df[col],
+                mode="lines",
+                name=col,
+                line=dict(
+                    color=color_palette[i % len(color_palette)],
+                    width=2.5,
+                    dash="solid" if col == "전기요금(원)" else "dot"
+                ),
+                line_shape="spline"
+            ))
+
+        fig.update_layout(
+            title=f"전기요금 및 주요 피처 추이 비교 ({title_suffix}, 정규화)",
+            xaxis_title="측정일시",
+            yaxis_title="정규화된 값 (0~1)",
+            legend_title="피처명",
+            hovermode="x unified",
+            template="plotly_white",
+            font=dict(size=13),
+            height=500
+        )
+        fig.update_xaxes(showgrid=False)
+        fig.update_yaxes(showgrid=True, gridcolor="rgba(200,200,200,0.3)")
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ============================================================
+    # 패턴 분석
+    # ============================================================
+    with pattern_tab:
+        st.subheader("패턴 분석")
+
+        # --------------------------
+        # 1️⃣ 데이터 불러오기
+        # --------------------------
+        train = pd.read_csv("./data/train_time_season.csv", encoding="utf-8-sig")
+        train["측정일시"] = pd.to_datetime(train["측정일시"], errors="coerce")
+
+        # 요일명 매핑
+        weekday_map = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
+        train["요일명"] = train["요일"].map(weekday_map)
+
+        # 통일된 색상 / 순서 지정
+        LOAD_ORDER = ["Light_Load", "Medium_Load", "Maximum_Load"]
+        LOAD_COLORS = {
+            "Light_Load": "#5AC8FA",  # 밝은 하늘색
+            "Medium_Load": "#FFCC00",  # 따뜻한 노랑
+            "Maximum_Load": "#FF6B6B"  # 코랄 레드
+        }
+
+        # --------------------------
+        # 2️⃣ 내부 탭 구성
+        # --------------------------
+        tab1, tab2 = st.tabs(["전력사용 패턴 분석", "작업유형 패턴 분석"])
+
+        # ============================================================
+        # (탭1) 전력사용 패턴 분석
+        # ============================================================
+        with tab1:
+            view_option = st.radio(
+                "분석 기준 선택",
+                ("계절별", "월별", "요일별", "시간대별"),
+                horizontal=True
+            )
+
+            if view_option == "계절별":
+                agg = train.groupby(["계절", "작업유형"])["전력사용량(kWh)"].sum().reset_index()
+                fig = px.bar(
+                    agg, x="계절", y="전력사용량(kWh)", color="작업유형",
+                    title="계절별 작업유형별 전력사용량",
+                    barmode="stack",
+                    category_orders={"계절": ["봄가을철", "여름철", "겨울철"],
+                                     "작업유형": LOAD_ORDER},
+                    color_discrete_map=LOAD_COLORS
+                )
+
+            elif view_option == "월별":
+                agg = train.groupby(["월", "작업유형"])["전력사용량(kWh)"].sum().reset_index()
+                fig = px.bar(
+                    agg, x="월", y="전력사용량(kWh)", color="작업유형",
+                    title="월별 작업유형별 전력사용량",
+                    barmode="stack",
+                    category_orders={"작업유형": LOAD_ORDER},
+                    color_discrete_map=LOAD_COLORS
+                )
+                fig.update_xaxes(dtick=1)
+
+            elif view_option == "요일별":
+                agg = train.groupby(["요일명", "작업유형"])["전력사용량(kWh)"].sum().reset_index()
+                fig = px.bar(
+                    agg, x="요일명", y="전력사용량(kWh)", color="작업유형",
+                    title="요일별 작업유형별 전력사용량",
+                    barmode="stack",
+                    category_orders={"요일명": ["월", "화", "수", "목", "금", "토", "일"],
+                                     "작업유형": LOAD_ORDER},
+                    color_discrete_map=LOAD_COLORS
+                )
+
+            else:
+                agg = train.groupby(["시간", "작업유형"])["전력사용량(kWh)"].sum().reset_index()
+                fig = px.bar(
+                    agg, x="시간", y="전력사용량(kWh)", color="작업유형",
+                    title="시간대별 작업유형별 전력사용량",
+                    barmode="stack",
+                    category_orders={"작업유형": LOAD_ORDER},
+                    color_discrete_map=LOAD_COLORS
+                )
+                fig.update_xaxes(dtick=1)
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        # ============================================================
+        # 🔋 (탭2) 작업유형 패턴 분석
+        # ============================================================
+        with tab2:
+            st.subheader("작업유형 패턴 분석 (빈도 기준)")
+
+            col_left, col_right = st.columns([1, 1.5])
+
+            # --------------------------
+            # 🔹 왼쪽: 전체 비중 파이차트
+            # --------------------------
+            with col_left:
+                total = train["작업유형"].value_counts().reindex(LOAD_ORDER).reset_index()
+                total.columns = ["작업유형", "빈도수"]
+                total["비중(%)"] = total["빈도수"] / total["빈도수"].sum() * 100
+
+                fig_pie = px.pie(
+                    total, values="빈도수", names="작업유형",
+                    title="작업유형별 전체 데이터 비중",
+                    color="작업유형",
+                    category_orders={"작업유형": LOAD_ORDER},
+                    color_discrete_map=LOAD_COLORS
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+            # --------------------------
+            # 🔹 오른쪽: 월/요일/시간대별 비중
+            # --------------------------
+            with col_right:
+                freq_view = st.radio(
+                    "분석 기준 선택",
+                    ("월별", "요일별", "시간대별"),
+                    horizontal=True
+                )
+
+                if freq_view == "월별":
+                    agg = train.groupby(["월", "작업유형"]).size().reset_index(name="빈도수")
+                    agg["비중(%)"] = agg.groupby("월")["빈도수"].transform(lambda x: x / x.sum() * 100)
+                    fig = px.bar(
+                        agg, x="월", y="비중(%)", color="작업유형",
+                        barmode="stack",
+                        title="월별 작업유형 비중 (빈도 기준)",
+                        category_orders={"작업유형": LOAD_ORDER},
+                        color_discrete_map=LOAD_COLORS
+                    )
+                    fig.update_xaxes(dtick=1)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                elif freq_view == "요일별":
+                    agg = train.groupby(["요일명", "작업유형"]).size().reset_index(name="빈도수")
+                    agg["비중(%)"] = agg.groupby("요일명")["빈도수"].transform(lambda x: x / x.sum() * 100)
+                    fig = px.bar(
+                        agg, x="요일명", y="비중(%)", color="작업유형",
+                        barmode="stack",
+                        title="요일별 작업유형 비중 (빈도 기준)",
+                        category_orders={"요일명": ["월", "화", "수", "목", "금", "토", "일"],
+                                         "작업유형": LOAD_ORDER},
+                        color_discrete_map=LOAD_COLORS
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                else:
+                    agg = train.groupby(["시간", "작업유형"]).size().reset_index(name="빈도수")
+                    agg["비중(%)"] = agg.groupby("시간")["빈도수"].transform(lambda x: x / x.sum() * 100)
+                    fig = px.bar(
+                        agg, x="시간", y="비중(%)", color="작업유형",
+                        barmode="stack",
+                        title="시간대별 작업유형 비중 (빈도 기준)",
+                        category_orders={"작업유형": LOAD_ORDER},
+                        color_discrete_map=LOAD_COLORS
+                    )
+                    fig.update_xaxes(dtick=1, range=[0, 23])
+                    st.plotly_chart(fig, use_container_width=True)
+
+            # --------------------------
+            # 🔹 Heatmap
+            # --------------------------
+            st.markdown("### 요일·시간대별 작업유형 집중도 (Heatmap)")
+
+            load_selected = st.radio(
+                "작업유형 선택",
+                LOAD_ORDER,
+                horizontal=True
+            )
+
+            heat = train.groupby(["요일명", "시간", "작업유형"])["전력사용량(kWh)"].mean().reset_index()
+            sub = heat[heat["작업유형"] == load_selected].copy()
+
+            # 빠진 시간 보정
+            full_hours = pd.DataFrame({"시간": range(0, 24)})
+            full_days = pd.DataFrame({"요일명": ["월", "화", "수", "목", "금", "토", "일"]})
+            full_grid = full_hours.merge(full_days, how="cross")
+            sub = full_grid.merge(sub, on=["요일명", "시간"], how="left")
+            sub["전력사용량(kWh)"] = sub["전력사용량(kWh)"].fillna(0)
+            sub["시간"] = sub["시간"].astype(str)
+
+            fig_h = px.density_heatmap(
+                sub, x="시간", y="요일명", z="전력사용량(kWh)",
+                color_continuous_scale="YlOrRd",
+                category_orders={"요일명": ["월", "화", "수", "목", "금", "토", "일"]},
+                title=f"{load_selected} 요일·시간대별 평균 전력사용량",
+                nbinsx=24
+            )
+
+            fig_h.update_xaxes(dtick=1, title="시간대 (0~23시)", showgrid=False)
+            fig_h.update_yaxes(title="요일", showgrid=False)
+            st.plotly_chart(fig_h, use_container_width=True)
 
 # =========================================
 # Peak & Alerts / Simulation
