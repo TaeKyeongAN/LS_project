@@ -1596,14 +1596,15 @@ with feature_tab:
         # 🔹 월/피처 선택 UI를 같은 줄(col) 안에 배치
         col_sel1, col_sel2 = st.columns([1, 1.2])
         with col_sel1:
-            selected_month = st.radio(
-                "분석할 월 선택", list(range(1, 12)),
-                horizontal=True, index=0
+            selected_month = st.selectbox(
+                "분석할 월 선택",
+                options=list(range(1, 12)),
+                index=0
             )
         with col_sel2:
             feature_choice = st.selectbox("비교할 피처 선택", feature_cols)
 
-        col1, spacer, col2 = st.columns([1.2, 0.1, 1.8])
+        col1, spacer, col2 = st.columns([1.3, 0.1, 1.7])
 
         # 1️⃣ 왼쪽: 월별 총합 전기요금
         with col1:
