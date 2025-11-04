@@ -2057,6 +2057,54 @@ with bill_tab:
     if bill_inputs.tariff_label:
         st.caption(f"현재 요금제: {bill_inputs.tariff_label} (기본요금 {bill_inputs.basic_charge_per_kw:,.0f} 원/kW)")
     m = this_month.copy()
+    if "timestamp" not in m.columns and "측정일시" in m.columns:
+        m = m.rename(columns={"측정일시": "timestamp"})
+    m["timestamp"] = pd.to_datetime(m["timestamp"], errors="coerce")
+    m = m.dropna(subset=["timestamp"])
+    if "kWh" not in m.columns and "pred_kwh" in m.columns:
+        m["kWh"] = pd.to_numeric(m["pred_kwh"], errors="coerce")
+    m["kWh"] = pd.to_numeric(m.get("kWh", 0.0), errors="coerce").fillna(0.0)
+    if "unit_price" not in m.columns and "pred_fee" in m.columns:
+        base_usage = m["kWh"].replace(0, np.nan)
+        derived_price = pd.to_numeric(m["pred_fee"], errors="coerce") / base_usage
+        m["unit_price"] = derived_price
+    m["unit_price"] = pd.to_numeric(m.get("unit_price", 0.0), errors="coerce").fillna(0.0)
+    m["hour"] = m["timestamp"].dt.hour
+    day_mask = (m["hour"] >= 9) & (m["hour"] < 23)
+
+    def _safe_pf(series, fallback):
+        return pd.to_numeric(series, errors="coerce").fillna(fallback)
+
+    if "pred_지상역률(%)" in m.columns:
+        ground_pf = _safe_pf(m["pred_지상역률(%)"], 95.0)
+    elif "지상역률(%)" in m.columns:
+        ground_pf = _safe_pf(m["지상역률(%)"], 95.0)
+    else:
+        ground_pf = pd.Series(95.0, index=m.index)
+
+    if "pred_진상역률(%)" in m.columns:
+        lead_pf = _safe_pf(m["pred_진상역률(%)"], 97.0)
+    elif "진상역률(%)" in m.columns:
+        lead_pf = _safe_pf(m["진상역률(%)"], 97.0)
+    else:
+        lead_pf = pd.Series(97.0, index=m.index)
+
+    m["pf_value"] = np.where(day_mask, ground_pf, lead_pf)
+
+    def _calc_pf_penalty_pct(pf_vals: pd.Series, is_day_series: pd.Series) -> np.ndarray:
+        pf_array = pf_vals.to_numpy(dtype=float, copy=False)
+        day_mask_arr = is_day_series.to_numpy(dtype=bool, copy=False)
+        day_clip = np.clip(pf_array, 60, 95)
+        night_clip = np.clip(pf_array, 60, 100)
+        clipped = np.where(day_mask_arr, day_clip, night_clip)
+        target = np.where(day_mask_arr, 90.0, 95.0)
+        deficiency = np.maximum(target - clipped, 0.0)
+        return deficiency * 0.2  # 1% 부족 시 0.2% 추가요율
+
+    m["pf_penalty_pct"] = _calc_pf_penalty_pct(m["pf_value"], day_mask)
+    m["pf_penalty_amt"] = m["kWh"] * m["unit_price"] * (m["pf_penalty_pct"] / 100.0)
+    pf_penalty_amount = float(np.nan_to_num(m["pf_penalty_amt"].sum(), nan=0.0))
+
     tou_energy = (
         m.assign(energy_value=m["kWh"] * m["unit_price"])
         .groupby("TOU", dropna=False)
@@ -2070,56 +2118,40 @@ with bill_tab:
     )
 
     energy_charge = float(tou_energy["energy_charge"].sum())
-    basic_charge = bill_inputs.contract_power_kw * bill_inputs.basic_charge_per_kw
+    basic_charge = float(bill_inputs.contract_power_kw * bill_inputs.basic_charge_per_kw)
     total_kwh_month = float(m["kWh"].sum())
-    fuel_adj_amt = total_kwh_month * bill_inputs.fuel_adj_per_kwh
-    climate_amt = total_kwh_month * bill_inputs.climate_per_kwh
 
-    subtotal = basic_charge + energy_charge + fuel_adj_amt + climate_amt
+    taxable_base = basic_charge + energy_charge + pf_penalty_amount
+    vat_amt = taxable_base * bill_inputs.vat_rate
+    total_bill = basic_charge + energy_charge + pf_penalty_amount + vat_amt
 
-    # 간이 초과패널티
-    r_full = df.set_index("timestamp")["kW"].rolling("1h").mean()
-    peak_val_full = float(r_full.max()) if len(r_full) else np.nan
-    overage_charge = 0.0
-    if isinstance(peak_val_full,float) and not math.isnan(peak_val_full) and peak_val_full > bill_inputs.contract_power_kw:
-        over_ratio = (peak_val_full - bill_inputs.contract_power_kw) / bill_inputs.contract_power_kw
-        w_price = float(np.nanmean(m["unit_price"])) if not m.empty else 0.0
-        overage_charge = total_kwh_month * w_price * over_ratio * (bill_inputs.over_contract_penalty_rate - 1.0)
-        subtotal += overage_charge
+    try:
+        r_full = df.set_index("timestamp")["kW"].rolling("1h").mean()
+        peak_val_full = float(r_full.max()) if len(r_full) else np.nan
+        peak_ts = r_full.idxmax() if len(r_full) else None
+    except KeyError:
+        peak_val_full = np.nan
+        peak_ts = None
 
-    industry_fund = subtotal * bill_inputs.industry_fund_rate
-    vat_amt = (subtotal + industry_fund) * bill_inputs.vat_rate
-    total_bill = subtotal + industry_fund + vat_amt
-
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("기본요금", f"{basic_charge:,.0f}원")
     c2.metric("전력량요금", f"{energy_charge:,.0f}원")
-    c3.metric("연료비/기후환경(합)", f"{(fuel_adj_amt+climate_amt):,.0f}원")
-    c4.metric("합계(세전)", f"{subtotal:,.0f}원")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("전력산업기반기금", f"{industry_fund:,.0f}원")
-    c2.metric("부가가치세", f"{vat_amt:,.0f}원")
-    c3.metric("추가패널티(간이)", f"{overage_charge:,.0f}원")
+    c3.metric("부가가치세", f"{vat_amt:,.0f}원")
+    c4.metric("추가패널티(역률)", f"{pf_penalty_amount:,.0f}원")
+    c5.metric("합계(부가세 포함)", f"{total_bill:,.0f}원")
+    c6.metric("사용 총 전기량(kWh)", f"{total_kwh_month:,.2f} kWh")
     st.success(f"추정 청구 금액(합계): **{total_bill:,.0f} 원**")
 
     st.markdown("### 시간대별 사용량/요금")
     st.dataframe(
-        tou_energy.rename(columns={"kWh":"kWh(월합)","unit_price":"단가(원/kWh)","energy_charge":"요금(원)"}),
+        tou_energy.rename(columns={"kWh":"kWh(월합)","unit_price":"단가(원/kWh)","energy_charge":"요금(원)"}), 
         use_container_width=True
     )
-
-    if isinstance(peak_val_full,float) and not math.isnan(peak_val_full) and peak_val_full > contract_power:
-        st.error(f"최대수요 {peak_val_full:,.1f} kW > 계약전력 {contract_power:,.1f} kW. 초과요금/패널티 위험.")
-    else:
-        st.info("현재 데이터에서는 계약전력 초과가 감지되지 않았습니다.")
 
     bill_export = {
         "기본요금":[basic_charge],
         "전력량요금":[energy_charge],
-        "연료비조정":[fuel_adj_amt],
-        "기후환경요금":[climate_amt],
-        "초과패널티(간이)":[overage_charge],
-        "전력산업기반기금":[industry_fund],
+        "역률추가요금":[pf_penalty_amount],
         "부가가치세":[vat_amt],
         "합계(세포함)":[total_bill],
     }
