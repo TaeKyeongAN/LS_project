@@ -957,7 +957,6 @@ st.sidebar.download_button(
 
 if st.sidebar.button("🤖 담당자와 대화하기", use_container_width=True):
     st.session_state.show_chat = True
-    st.rerun()
 
 
 # =========================================
