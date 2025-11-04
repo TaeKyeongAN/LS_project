@@ -934,9 +934,29 @@ peer_avg_multiplier = 0.9
 
 
 st.sidebar.divider()
+pdf_payload = st.session_state.get("sidebar_pdf_payload")
+default_pdf_name = "predicted_bill.pdf"
+if pdf_payload and pdf_payload.get("bytes"):
+    sidebar_pdf_bytes = pdf_payload["bytes"]
+    sidebar_pdf_name = pdf_payload.get("name", default_pdf_name)
+    sidebar_pdf_disabled = False
+else:
+    sidebar_pdf_bytes = b""
+    sidebar_pdf_name = default_pdf_name
+    sidebar_pdf_disabled = True
+
+st.sidebar.download_button(
+    "📄 예측 요금 명세서 PDF 다운로드",
+    data=sidebar_pdf_bytes,
+    file_name=sidebar_pdf_name,
+    mime="application/pdf",
+    use_container_width=True,
+    key="sidebar_pdf_download",
+    disabled=sidebar_pdf_disabled,
+)
+
 if st.sidebar.button("🤖 담당자와 대화하기", use_container_width=True):
     st.session_state.show_chat = True
-    st.rerun()
 
 
 # =========================================
@@ -2142,21 +2162,6 @@ with bill_tab:
         use_container_width=True
     )
 
-    bill_export = {
-        "기본요금":[basic_charge],
-        "전력량요금":[energy_charge],
-        "역률추가요금":[pf_penalty_amount],
-        "부가가치세":[vat_amt],
-        "합계(세포함)":[total_bill],
-    }
-    bill_df = pd.DataFrame(bill_export)
-    st.download_button(
-        "고지서 요약 CSV 다운로드",
-        bill_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="bill_summary.csv",
-        mime="text/csv"
-    )
-
 # =========================================
 # PDF 다운로드 (app.py 동일 포맷)
 # =========================================
@@ -2206,13 +2211,11 @@ except FileNotFoundError:
 
 comparison_df = create_comparison_table_data(train_df, results_df)
 pdf_bytes = generate_bill_pdf(report_data, comparison_df)
-if pdf_bytes:
-    st.download_button(
-        label="📄 예측 요금 명세서 PDF 다운로드",
-        data=pdf_bytes,
-        file_name=f"predicted_bill_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-        mime="application/pdf",
-    )
+pdf_filename = f"predicted_bill_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+st.session_state["sidebar_pdf_payload"] = {
+    "bytes": pdf_bytes,
+    "name": pdf_filename,
+} if pdf_bytes else None
 
 # =========================================
 # Report (Excel only to keep compact)
@@ -2224,19 +2227,6 @@ with report_tab:
         kWh=("kWh","sum"), kW=("kW","mean")
     ).reset_index().rename(columns={"timestamp":"date"})
     st.dataframe(daily_tbl, use_container_width=True)
-
-    csv_bytes = daily_tbl.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("월간 일일 사용량 CSV", csv_bytes, file_name="monthly_daily_usage.csv", mime="text/csv")
-
-    try:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            daily_tbl.to_excel(writer, index=False, sheet_name="Daily")
-            tou_energy.to_excel(writer, index=False, sheet_name="TOU")
-            bill_df.to_excel(writer, index=False, sheet_name="Bill")
-        st.download_button("엑셀 보고서 다운로드", data=output.getvalue(), file_name="energy_report.xlsx")
-    except Exception as e:
-        st.warning(f"Excel 내보내기 경고: {e}")
 
 # =========================================
 # Footer
