@@ -23,22 +23,6 @@ FONT_PATH_REGULAR = "./www/fonts/NanumGothic-Regular.ttf"
 FONT_PATH_BOLD = "./www/fonts/NanumGothic-Bold.ttf"
 
 
-# =========================================
-# Helper charts (고정 placeholder로만 그리기)
-# =========================================
-# def render_kwh_chart(df_acc: pd.DataFrame, placeholder):
-#     chart = (
-#         alt.Chart(df_acc)
-#         .mark_line(point=True)
-#         .encode(
-#             x=alt.X("timestamp:T", title="시간"),
-#             y=alt.Y("kWh:Q", title="전력사용량(kWh)"),
-#             tooltip=["timestamp", alt.Tooltip("kWh:Q", format=",.2f")]
-#         )
-#         .properties(height=260)
-#     )
-#     placeholder.altair_chart(chart, use_container_width=True)
-
 
 def render_pf_combined(df_acc: pd.DataFrame, placeholder):
     df_pf = df_acc.copy()
@@ -275,7 +259,7 @@ def show_chatbot():
     """st.dialog를 사용하여 모달 챗봇 UI를 표시합니다."""
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = [
-            {"role": "assistant", "content": "안녕하세요! 전력 대시보드 관련 질문에 답변해 드립니다."}
+            {"role": "assistant", "content": "안녕하세요!\n 전력 모니터 관련 질문에 답변해 드립니다."}
         ]
 
     for msg in st.session_state.chat_messages:
@@ -289,8 +273,8 @@ def show_chatbot():
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        response_content = "지금은 담당자가 예비군에 참석하여 답변이 어렵습니다. 🫡 다음에 다시 문의해주세요!"
-        image_url = "./data/army.JPG"  # 또는 임의의 안내 이미지
+        response_content = "현재 [오정민] 담당자가 예비군에 참석하여 답변이 어렵습니다.🫡\n 다음에 다시 문의해주세요!"
+        image_url = "./data/army.JPG"  
 
         st.session_state.chat_messages.append({
             "role": "assistant",
@@ -870,46 +854,48 @@ def generate_bill_pdf(report_data, comparison_df=None):
 # =========================================
 # Sidebar — Data Source & Params
 # =========================================
-st.sidebar.header("데이터 소스 & 설정")
+st.sidebar.header("⚙️ 설정")
 # ✅ 모델 스트리밍 소스 추가
-source = st.sidebar.radio(
-    "데이터 소스",
-    ["실시간 전기요금 분석", "CSV 업로드"],
-    horizontal=False
-)
+# source = st.sidebar.radio(
+#     "데이터 소스",
+#     ["실시간 전기요금 분석", "CSV 업로드"],
+#     horizontal=False
+# )
 
-# Streaming controls (only visible for "실시간 전기요금 분석")
-if source == "실시간 전기요금 분석":
-    st.sidebar.markdown("**실시간 예측 스트리밍 제어**")
-    col_s1, col_s2, col_s3 = st.sidebar.columns([1,1,1])
-    with col_s1:
-        if st.button("▶️ 시작/재개", key="btn_start"):
-            st.session_state.streaming_running = True
-            # 초기화: 파일을 로딩하고, 누적 버퍼 준비
-            if "stream_source_df" not in st.session_state:
-                try:
-                    src = pd.read_csv("./data/predicted_test_data.csv")
-                except FileNotFoundError:
-                    st.sidebar.error("`./data/predicted_test_data.csv`를 찾을 수 없습니다.")
-                    st.stop()
-                # 표준화
-                if "timestamp" not in src.columns and "측정일시" in src.columns:
-                    src = src.rename(columns={"측정일시": "timestamp"})
-                if "kWh" not in src.columns and "전력사용량(kWh)" in src.columns:
-                    src = src.rename(columns={"전력사용량(kWh)": "kWh"})
-                src["timestamp"] = pd.to_datetime(src["timestamp"])
-                src = src.sort_values("timestamp").reset_index(drop=True)
-                st.session_state.stream_source_df = src
-                st.session_state.stream_idx = 0
-                st.session_state.stream_accum_df = pd.DataFrame(columns=src.columns)
-    with col_s2:
-        if st.button("⏸️ 일시정지", key="btn_pause"):
-            st.session_state.streaming_running = False
-    with col_s3:
-        if st.button("⏹️ 정지/초기화", key="btn_stop"):
-            st.session_state.streaming_running = False
-            for k in ["stream_source_df","stream_idx","stream_accum_df"]:
-                if k in st.session_state: del st.session_state[k]
+
+source = "실시간 전기요금 분석" 
+
+
+st.sidebar.markdown("**실시간 예측 스트리밍 제어**")
+col_s1, col_s2, col_s3 = st.sidebar.columns([1,1,1])
+with col_s1:
+    if st.button("▶️ 시작", key="btn_start"):
+        st.session_state.streaming_running = True
+        # 초기화: 파일을 로딩하고, 누적 버퍼 준비
+        if "stream_source_df" not in st.session_state:
+            try:
+                src = pd.read_csv("./data/predicted_test_data.csv")
+            except FileNotFoundError:
+                st.sidebar.error("`./data/predicted_test_data.csv`를 찾을 수 없습니다.")
+                st.stop()
+            # 표준화
+            if "timestamp" not in src.columns and "측정일시" in src.columns:
+                src = src.rename(columns={"측정일시": "timestamp"})
+            if "kWh" not in src.columns and "전력사용량(kWh)" in src.columns:
+                src = src.rename(columns={"전력사용량(kWh)": "kWh"})
+            src["timestamp"] = pd.to_datetime(src["timestamp"])
+            src = src.sort_values("timestamp").reset_index(drop=True)
+            st.session_state.stream_source_df = src
+            st.session_state.stream_idx = 0
+            st.session_state.stream_accum_df = pd.DataFrame(columns=src.columns)
+with col_s2:
+    if st.button("⏸️ 일시정지", key="btn_pause"):
+        st.session_state.streaming_running = False
+with col_s3:
+    if st.button("⏹️ 초기화", key="btn_stop"):
+        st.session_state.streaming_running = False
+        for k in ["stream_source_df","stream_idx","stream_accum_df"]:
+            if k in st.session_state: del st.session_state[k]
 
 st.sidebar.subheader("계약/목표 설정")
 if "selected_tariff_code" not in st.session_state:
@@ -953,31 +939,13 @@ if st.sidebar.button("🤖 챗봇과 대화하기", use_container_width=True):
 # =========================================
 # Load Source Data
 # =========================================
-if source == "데모(내장)":
-    raw_df = generate_demo_data()
-elif source == "CSV 업로드":
-    raw_df = None
-    up = st.sidebar.file_uploader("timestamp, kW/kWh 포함 CSV", type=["csv"])
-    if up is not None:
-        try:
-            df_u = pd.read_csv(up)
-            if "timestamp" not in df_u.columns and "측정일시" in df_u.columns:
-                df_u = df_u.rename(columns={"측정일시": "timestamp"})
-            df_u["timestamp"] = pd.to_datetime(df_u["timestamp"])
-            raw_df = df_u.sort_values("timestamp")
-        except Exception as e:
-            st.sidebar.error(f"CSV 파싱 오류: {e}")
-    else:
-        raw_df = generate_demo_data()
-elif source == "실시간 전기요금 분석":
-    # 누적 버퍼가 있으면 그것을 사용, 없으면 빈 프레임
-    if "stream_accum_df" in st.session_state and len(st.session_state.stream_accum_df) > 0:
-        raw_df = st.session_state.stream_accum_df.rename(
-            columns={"측정일시":"timestamp","전력사용량(kWh)":"kWh"}
-        )
-    else:
-        # 시작 전에는 최근 24h를 비워두기보다 데모 베이스를 얹어 두면 화면이 살아있음
-        raw_df = generate_demo_data(days=2)
+if "stream_accum_df" in st.session_state and len(st.session_state.stream_accum_df) > 0:
+    raw_df = st.session_state.stream_accum_df.rename(
+        columns={"측정일시":"timestamp","전력사용량(kWh)":"kWh"}
+    )
+else:
+    # 시작 전에는 최근 24h를 비워두기보다 데모 베이스를 얹어 두면 화면이 살아있음
+    raw_df = generate_demo_data(days=2)
 
 # # =========================================
 # # Streaming Step (실시간 전기요금 분석 전용 루프)
@@ -1063,15 +1031,10 @@ with col_title:
     """, unsafe_allow_html=True)
 
 with col_logo:
-    # use_container_width=True는 컬럼 너비에 맞춥니다.
-    # 로고를 위로 올리기 위해 컬럼 내에서 이미지를 바로 배치합니다.
-    # 작은 이미지의 경우 width를 지정하는 것이 더 깔끔할 수 있습니다. (예: width=100)
     st.image("./LS.png", use_container_width=True)
 
-# =========================================
-# 간격 추가 (Space Insertion)
-# =========================================
-st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
+
+st.markdown("<div style='height: 80px;'></div>", unsafe_allow_html=True)
 
 
 # =========================================
@@ -1106,13 +1069,13 @@ main_tab, feature_tab, load_tab, alert_tab, bill_tab, report_tab = st.tabs(
 # Main Dashboard
 # =========================================
 with main_tab:
-    st.subheader("⚡ 실시간 사용량 & 요금 추정 (Streaming 확장)")
+    st.subheader("")
 
     # 좌우 그래프 (50:50)
     col_chart1, col_chart2 = st.columns(2)
 
     with col_chart1:
-        st.markdown("#### 💰 12월 시간대별 예측 요금 추이")
+        st.markdown("#### 💰 실시간 전기 요금 추이")
         tou_chart_placeholder = st.empty()
     with col_chart2:
         st.markdown("#### ⚙️ 실시간 통합 역률 추이")
@@ -1216,7 +1179,7 @@ with main_tab:
         
         # 3️⃣ 결합
         chart_tou = (base_line + points).properties(
-            width=800, height=400, title="💰 12월 시간대별 예측 요금 추이"
+            width=800, height=400,
         ).configure_legend(
             orient="top-right", labelFontSize=11, titleFontSize=12,
             direction="vertical", symbolSize=80, padding=10
@@ -1301,61 +1264,11 @@ with main_tab:
                 render_stream_views(st.session_state.stream_accum_df.copy())
                 total_bill_metric.metric("누적 요금(원)", f"{st.session_state.get('total_bill',0):,.0f}")
                 total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.get('total_usage',0):,.2f}")
-                st.info("⏸ 일시정지 — [시작/재개] 버튼을 눌러 스트리밍 재개")
+                st.info("⏸ 일시정지 — [시작] 버튼을 눌러 스트리밍 재개")
             else:
-                st.warning("▶️ [시작/재개] 버튼을 눌러 실시간 스트리밍을 시작하세요.")
+                st.warning("▶️ [시작] 버튼을 눌러 실시간 스트리밍을 시작하세요.")
 
 
-
-
-    # with right:
-    #     st.subheader("월간 추이 & 전년/전월 비교")
-    #     dd = daily.tail(90).reset_index()
-    #     fig2 = px.bar(dd, x="timestamp", y="kWh", labels={"timestamp":"일자","kWh":"kWh"})
-    #     fig2.update_layout(height=280, margin=dict(l=10,r=10,t=30,b=10))
-    #     st.plotly_chart(fig2, use_container_width=True)
-
-    #     st.subheader("동종업계 평균 비교 (모의)")
-    #     peer_df = dd.copy()
-    #     peer_df["peer_kWh"] = peer_df["kWh"] * peer_avg_multiplier
-    #     fig3 = go.Figure()
-    #     fig3.add_trace(go.Bar(x=peer_df["timestamp"], y=peer_df["kWh"], name="우리(일 사용량)"))
-    #     fig3.add_trace(go.Scatter(x=peer_df["timestamp"], y=peer_df["peer_kWh"], name="업계 평균(가정)", mode="lines"))
-    #     fig3.update_layout(height=280, margin=dict(l=10,r=10,t=30,b=10))
-    #     st.plotly_chart(fig3, use_container_width=True)
-
-# # =========================================
-# # 역률 시각화 섹션 (app.py 동일)
-# # =========================================
-# st.divider()
-# st.subheader("실시간 통합 역률 추이")
-
-# try:
-#     # 역률 관련 더미 컬럼이 없는 경우 생성
-#     df_pf = df.copy()
-#     if "측정일시" not in df_pf.columns:
-#         df_pf["측정일시"] = df_pf["timestamp"]
-
-#     if "지상역률_주간클립" not in df_pf.columns:
-#         df_pf["지상역률_주간클립"] = np.random.uniform(85, 99, len(df_pf))
-#     if "진상역률(%)" not in df_pf.columns:
-#         df_pf["진상역률(%)"] = np.random.uniform(90, 100, len(df_pf))
-
-#     # 주간여부/야간여부 컬럼 추가
-#     df_pf["주간여부"] = ((df_pf["timestamp"].dt.hour >= 9) & (df_pf["timestamp"].dt.hour <= 23)).astype(int)
-#     df_pf["야간여부"] = ((df_pf["timestamp"].dt.hour < 9) | (df_pf["timestamp"].dt.hour >= 23)).astype(int)
-
-#     # Altair x축 정의
-#     x_axis = alt.X("측정일시:T", title="시간")
-
-#     # 차트 생성 및 표시
-#     combined_pf_chart = create_combined_pf_chart(df_pf, x_axis)
-#     if combined_pf_chart:
-#         st.altair_chart(combined_pf_chart, use_container_width=True)
-#     else:
-#         st.info("유효한 역률 데이터가 없습니다.")
-# except Exception as e:
-#     st.warning(f"역률 시각화 오류: {e}")
 
 
 # =========================================
