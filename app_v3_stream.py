@@ -1049,167 +1049,165 @@ main_tab, feature_tab, load_tab, alert_tab, bill_tab, report_tab = st.tabs(
 # =========================================
 # Main Dashboard
 # =========================================
-# with main_tab:
-#     left, right = st.columns([1.2, 1])
-
-
-#     with left:
-# ── 그래프 제목(항상 상단 고정) ──────────────────────────────────
-st.subheader("실시간 사용량 & 요금 추정 (Streaming 확장)")
-# st.markdown("#### ⚡ 실시간 전력사용량 추이")
-chart_placeholder = st.empty()
-
-
-
-st.markdown("#### 💰 12월 시간대별 예측 요금 추이")
-tou_chart_placeholder = st.empty()
-
-
-st.markdown("#### ⚙️ 실시간 통합 역률 추이")
-pf_chart_placeholder = st.empty()
-
-# 메트릭
-mc1, mc2 = st.columns(2)
-total_bill_metric = mc1.empty()
-total_usage_metric = mc2.empty()
-latest_placeholder = st.empty()
-
-# ── 공통 렌더 함수 (재생/일시정지 동일 사용) ────────────────────
-def render_stream_views(df_acc):
-    if df_acc.empty:
-        return
-
-    latest_time = df_acc["timestamp"].max()
-    start_domain = latest_time - pd.Timedelta(hours=24) if pd.notna(latest_time) else None
-    shared_x = alt.X(
-        "timestamp:T", title="시간",
-        scale=alt.Scale(domain=[start_domain, latest_time]) if start_domain else alt.Undefined
-    )
-
-    # # ① kWh 라인
-    # chart = (
-    #     alt.Chart(df_acc)
-    #     .mark_line(point=True, interpolate="monotone")
-    #     .encode(
-    #         x=shared_x,
-    #         y=alt.Y("kWh:Q", title="전력사용량 (kWh)"),
-    #         tooltip=["timestamp", alt.Tooltip("kWh:Q", format=",.2f")]
-    #     )
-    #     .properties(height=250)
-    # )
-    # chart_placeholder.altair_chart(chart, use_container_width=True)
-
-    # ② 역률(임시/데모 생성 로직)
-    df_pf = df_acc.copy()
-    df_pf["측정일시"] = pd.to_datetime(df_pf["timestamp"], errors="coerce")
-    # 필요한 컬럼 없으면 임시 난수 생성
-    if "지상역률_주간클립" not in df_pf.columns:
-        df_pf["지상역률_주간클립"] = np.random.uniform(88, 99, len(df_pf))
-    if "진상역률(%)" not in df_pf.columns:
-        df_pf["진상역률(%)"] = np.random.uniform(93, 100, len(df_pf))
-    df_pf["주간여부"] = ((df_pf["측정일시"].dt.hour >= 9) & (df_pf["측정일시"].dt.hour <= 23)).astype(int)
-    df_pf["야간여부"] = ((df_pf["측정일시"].dt.hour < 9) | (df_pf["측정일시"].dt.hour >= 23)).astype(int)
-
-    pf_chart = create_combined_pf_chart(df_pf, shared_x)
-    if pf_chart:
-        pf_chart_placeholder.altair_chart(pf_chart, use_container_width=True)
-    else:
-        pf_chart_placeholder.info("역률 데이터가 부족하여 표시할 수 없습니다.")
-
-    # ③ TOU/작업유형 라인 (app.py 방식)
-    df_tou = df_acc.copy()
-    df_tou["측정일시"] = pd.to_datetime(df_tou["timestamp"], errors="coerce")
-    df_tou = df_tou.sort_values("측정일시").reset_index(drop=True)
-
-    # 작업유형/TOU 그룹 매핑
-    def worktype(h):
-        if (h >= 23 or h < 7): return "Light_Load"
-        if 10 <= h < 18:       return "Maximum_Load"
-        return "Medium_Load"
-    hours = df_tou["측정일시"].dt.hour
-    df_tou["작업유형"] = hours.apply(worktype)
-    # 작업유형이 바뀔 때 선이 끊기지 않도록 세그먼트 그룹
-    df_tou["segment_group"] = (df_tou["작업유형"] != df_tou["작업유형"].shift(1)).cumsum()
-
-    # 예측요금(원)
-    def tou_price(h):
-        if (h >= 23 or h < 7): return 90
-        if 10 <= h < 18:       return 160
-        return 120
-    df_tou["예측요금(원)"] = df_tou["kWh"] * hours.apply(tou_price)
-
-    color_scale = alt.Scale(
-        domain=["Light_Load", "Medium_Load", "Maximum_Load"],
-        range=["forestgreen", "gold", "firebrick"]
-    )
-    chart_tou = (
-        alt.Chart(df_tou)
-        .mark_line(point=True, interpolate="monotone", strokeWidth=2)
-        .encode(
-            x=alt.X("측정일시:T", title="측정일시",
-                    scale=alt.Scale(domain=[start_domain, latest_time])),
-            y=alt.Y("예측요금(원):Q", title="예측요금 (원)"),
-            color=alt.Color("작업유형:N", scale=color_scale, title="작업 유형"),
-            detail="segment_group:Q",
-            order=alt.Order("측정일시:T"),
-            tooltip=[
-                alt.Tooltip("측정일시:T", title="시간"),
-                alt.Tooltip("작업유형:N", title="구간"),
-                alt.Tooltip("예측요금(원):Q", format=",.0f"),
-            ],
-        )
-        .interactive(bind_y=False)
-        .properties(height=250)
-    )
-    tou_chart_placeholder.altair_chart(chart_tou, use_container_width=True)
-
-# ── 스트리밍 제어 ───────────────────────────────────────────────
-if source == "실시간 전기요금 분석":
-    src = st.session_state.get("stream_source_df", None)
-
-    # ▶ 재생 중 : while 루프로 연속 업데이트(무 rerun)
-    if st.session_state.get("streaming_running", False) and src is not None:
-        # 한 번 실행 안에서 계속 소비 (스크롤 점프 없음)
-        while st.session_state.get("streaming_running", False) and \
-            st.session_state.get("stream_idx", 0) < len(src):
-
-            idx = st.session_state.get("stream_idx", 0)
-            batch = src.iloc[[idx]].copy()
-            st.session_state.stream_idx = idx + 1
-
-            acc = st.session_state.get("stream_accum_df", pd.DataFrame(columns=src.columns))
-            st.session_state.stream_accum_df = pd.concat([acc, batch], ignore_index=True)
-
-            # 누적 메트릭
-            kwh = float(batch["kWh"].iloc[0])
-            st.session_state.total_bill = st.session_state.get("total_bill", 0.0) + kwh * 150
-            st.session_state.total_usage = st.session_state.get("total_usage", 0.0) + kwh
-
-            # 렌더
-            df_acc = st.session_state.stream_accum_df.copy()
-            render_stream_views(df_acc)
-
-            total_bill_metric.metric("누적 요금(원)", f"{st.session_state.total_bill:,.0f}")
-            total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.total_usage:,.2f}")
-            latest_placeholder.info(f"📈 최근 갱신: {batch['timestamp'].iloc[0]} | {kwh:.2f} kWh")
-
-            # 살짝 대기 후 다음 포인트로
-            time.sleep(0.3)
-
-        # 모두 소비했으면 상태 변경
-        if st.session_state.get("stream_idx", 0) >= len(src):
-            st.session_state.streaming_running = False
-            st.success("✅ 스트리밍 완료!")
-
-    # ⏸ 일시정지 : 현재 누적 데이터 그대로 렌더
-    else:
-        if "stream_accum_df" in st.session_state and len(st.session_state.stream_accum_df) > 0:
-            render_stream_views(st.session_state.stream_accum_df.copy())
-            total_bill_metric.metric("누적 요금(원)", f"{st.session_state.get('total_bill',0):,.0f}")
-            total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.get('total_usage',0):,.2f}")
-            st.info("⏸ 일시정지 — [시작/재개] 버튼을 눌러 스트리밍 재개")
-        else:
-            st.warning("▶️ [시작/재개] 버튼을 눌러 실시간 스트리밍을 시작하세요.")
+with main_tab:
+    left, right = st.columns([1.2, 1])
+    with left:
+        # ── 그래프 제목(항상 상단 고정) ──────────────────────────────────
+        st.subheader("실시간 사용량 & 요금 추정 (Streaming 확장)")
+        # st.markdown("#### ⚡ 실시간 전력사용량 추이")
+        chart_placeholder = st.empty()
+        
+        
+        
+        st.markdown("#### 💰 12월 시간대별 예측 요금 추이")
+        tou_chart_placeholder = st.empty()
+        
+        
+        st.markdown("#### ⚙️ 실시간 통합 역률 추이")
+        pf_chart_placeholder = st.empty()
+        
+        # 메트릭
+        mc1, mc2 = st.columns(2)
+        total_bill_metric = mc1.empty()
+        total_usage_metric = mc2.empty()
+        latest_placeholder = st.empty()
+        
+        # ── 공통 렌더 함수 (재생/일시정지 동일 사용) ────────────────────
+        def render_stream_views(df_acc):
+            if df_acc.empty:
+                return
+        
+            latest_time = df_acc["timestamp"].max()
+            start_domain = latest_time - pd.Timedelta(hours=24) if pd.notna(latest_time) else None
+            shared_x = alt.X(
+                "timestamp:T", title="시간",
+                scale=alt.Scale(domain=[start_domain, latest_time]) if start_domain else alt.Undefined
+            )
+        
+            # # ① kWh 라인
+            # chart = (
+            #     alt.Chart(df_acc)
+            #     .mark_line(point=True, interpolate="monotone")
+            #     .encode(
+            #         x=shared_x,
+            #         y=alt.Y("kWh:Q", title="전력사용량 (kWh)"),
+            #         tooltip=["timestamp", alt.Tooltip("kWh:Q", format=",.2f")]
+            #     )
+            #     .properties(height=250)
+            # )
+            # chart_placeholder.altair_chart(chart, use_container_width=True)
+        
+            # ② 역률(임시/데모 생성 로직)
+            df_pf = df_acc.copy()
+            df_pf["측정일시"] = pd.to_datetime(df_pf["timestamp"], errors="coerce")
+            # 필요한 컬럼 없으면 임시 난수 생성
+            if "지상역률_주간클립" not in df_pf.columns:
+                df_pf["지상역률_주간클립"] = np.random.uniform(88, 99, len(df_pf))
+            if "진상역률(%)" not in df_pf.columns:
+                df_pf["진상역률(%)"] = np.random.uniform(93, 100, len(df_pf))
+            df_pf["주간여부"] = ((df_pf["측정일시"].dt.hour >= 9) & (df_pf["측정일시"].dt.hour <= 23)).astype(int)
+            df_pf["야간여부"] = ((df_pf["측정일시"].dt.hour < 9) | (df_pf["측정일시"].dt.hour >= 23)).astype(int)
+        
+            pf_chart = create_combined_pf_chart(df_pf, shared_x)
+            if pf_chart:
+                pf_chart_placeholder.altair_chart(pf_chart, use_container_width=True)
+            else:
+                pf_chart_placeholder.info("역률 데이터가 부족하여 표시할 수 없습니다.")
+        
+            # ③ TOU/작업유형 라인 (app.py 방식)
+            df_tou = df_acc.copy()
+            df_tou["측정일시"] = pd.to_datetime(df_tou["timestamp"], errors="coerce")
+            df_tou = df_tou.sort_values("측정일시").reset_index(drop=True)
+        
+            # 작업유형/TOU 그룹 매핑
+            def worktype(h):
+                if (h >= 23 or h < 7): return "Light_Load"
+                if 10 <= h < 18:       return "Maximum_Load"
+                return "Medium_Load"
+            hours = df_tou["측정일시"].dt.hour
+            df_tou["작업유형"] = hours.apply(worktype)
+            # 작업유형이 바뀔 때 선이 끊기지 않도록 세그먼트 그룹
+            df_tou["segment_group"] = (df_tou["작업유형"] != df_tou["작업유형"].shift(1)).cumsum()
+        
+            # 예측요금(원)
+            def tou_price(h):
+                if (h >= 23 or h < 7): return 90
+                if 10 <= h < 18:       return 160
+                return 120
+            df_tou["예측요금(원)"] = df_tou["kWh"] * hours.apply(tou_price)
+        
+            color_scale = alt.Scale(
+                domain=["Light_Load", "Medium_Load", "Maximum_Load"],
+                range=["forestgreen", "gold", "firebrick"]
+            )
+            chart_tou = (
+                alt.Chart(df_tou)
+                .mark_line(point=True, interpolate="monotone", strokeWidth=2)
+                .encode(
+                    x=alt.X("측정일시:T", title="측정일시",
+                            scale=alt.Scale(domain=[start_domain, latest_time])),
+                    y=alt.Y("예측요금(원):Q", title="예측요금 (원)"),
+                    color=alt.Color("작업유형:N", scale=color_scale, title="작업 유형"),
+                    detail="segment_group:Q",
+                    order=alt.Order("측정일시:T"),
+                    tooltip=[
+                        alt.Tooltip("측정일시:T", title="시간"),
+                        alt.Tooltip("작업유형:N", title="구간"),
+                        alt.Tooltip("예측요금(원):Q", format=",.0f"),
+                    ],
+                )
+                .interactive(bind_y=False)
+                .properties(height=250)
+            )
+            tou_chart_placeholder.altair_chart(chart_tou, use_container_width=True)
+        
+        # ── 스트리밍 제어 ───────────────────────────────────────────────
+        if source == "실시간 전기요금 분석":
+            src = st.session_state.get("stream_source_df", None)
+        
+            # ▶ 재생 중 : while 루프로 연속 업데이트(무 rerun)
+            if st.session_state.get("streaming_running", False) and src is not None:
+                # 한 번 실행 안에서 계속 소비 (스크롤 점프 없음)
+                while st.session_state.get("streaming_running", False) and \
+                    st.session_state.get("stream_idx", 0) < len(src):
+        
+                    idx = st.session_state.get("stream_idx", 0)
+                    batch = src.iloc[[idx]].copy()
+                    st.session_state.stream_idx = idx + 1
+        
+                    acc = st.session_state.get("stream_accum_df", pd.DataFrame(columns=src.columns))
+                    st.session_state.stream_accum_df = pd.concat([acc, batch], ignore_index=True)
+        
+                    # 누적 메트릭
+                    kwh = float(batch["kWh"].iloc[0])
+                    st.session_state.total_bill = st.session_state.get("total_bill", 0.0) + kwh * 150
+                    st.session_state.total_usage = st.session_state.get("total_usage", 0.0) + kwh
+        
+                    # 렌더
+                    df_acc = st.session_state.stream_accum_df.copy()
+                    render_stream_views(df_acc)
+        
+                    total_bill_metric.metric("누적 요금(원)", f"{st.session_state.total_bill:,.0f}")
+                    total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.total_usage:,.2f}")
+                    latest_placeholder.info(f"📈 최근 갱신: {batch['timestamp'].iloc[0]} | {kwh:.2f} kWh")
+        
+                    # 살짝 대기 후 다음 포인트로
+                    time.sleep(0.3)
+        
+                # 모두 소비했으면 상태 변경
+                if st.session_state.get("stream_idx", 0) >= len(src):
+                    st.session_state.streaming_running = False
+                    st.success("✅ 스트리밍 완료!")
+        
+            # ⏸ 일시정지 : 현재 누적 데이터 그대로 렌더
+            else:
+                if "stream_accum_df" in st.session_state and len(st.session_state.stream_accum_df) > 0:
+                    render_stream_views(st.session_state.stream_accum_df.copy())
+                    total_bill_metric.metric("누적 요금(원)", f"{st.session_state.get('total_bill',0):,.0f}")
+                    total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.get('total_usage',0):,.2f}")
+                    st.info("⏸ 일시정지 — [시작/재개] 버튼을 눌러 스트리밍 재개")
+                else:
+                    st.warning("▶️ [시작/재개] 버튼을 눌러 실시간 스트리밍을 시작하세요.")
 
 
 
