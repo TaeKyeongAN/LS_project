@@ -4,7 +4,7 @@ from __future__ import annotations
 import io, math, time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -318,42 +318,158 @@ if st.session_state.get("show_chat", False):
 # =========================================
 # Data Models
 # =========================================
-class TOURate(BaseModel):
-    name: str
-    start_hour: int   # inclusive 0-23
-    end_hour: int     # exclusive 1-24
-    energy_rate: float = Field(..., description="kWh unit price (KRW/kWh)")
-
 class BillInputs(BaseModel):
     contract_power_kw: float = 500.0
     basic_charge_per_kw: float = 7000.0
-    tou_rates: List[TOURate] = []
+    tariff_rates: Dict[str, Dict[str, float]] = Field(default_factory=dict)
     fuel_adj_per_kwh: float = 0.0
     climate_per_kwh: float = 0.0
     industry_fund_rate: float = 0.037
     vat_rate: float = 0.1
     over_contract_penalty_rate: float = 1.5
+    tariff_code: str = ""
+    tariff_label: str = ""
 
-DEFAULT_TOU = [
-    TOURate(name="경부하", start_hour=23, end_hour=7,  energy_rate=90.0),
-    TOURate(name="중간부하", start_hour=7,  end_hour=10, energy_rate=120.0),
-    TOURate(name="최대부하", start_hour=10, end_hour=18, energy_rate=160.0),
-    TOURate(name="중간부하", start_hour=18, end_hour=23, energy_rate=120.0),
-]
+LOAD_ORDER = ["경부하", "중간부하", "최대부하"]
+SEASON_KEYS = ("summer", "spring_fall", "winter")
+SEASON_LABELS = {
+    "summer": "여름철(6~8월)",
+    "spring_fall": "봄·가을철(3~5,9~10월)",
+    "winter": "겨울철(11~2월)",
+}
+
+
+def month_to_season_key(month: int) -> str:
+    try:
+        month_int = int(month)
+    except (TypeError, ValueError):
+        month_int = 1
+    if month_int in (6, 7, 8):
+        return "summer"
+    if month_int in (3, 4, 5, 9, 10):
+        return "spring_fall"
+    return "winter"
+
+
+TARIFF_PLANS: Dict[str, Dict[str, object]] = {
+    "A1": {
+        "label": "고압A 선택Ⅰ",
+        "basic_charge": 7220.0,
+        "energy_rates": {
+            "경부하": {"summer": 99.5, "spring_fall": 99.5, "winter": 106.5},
+            "중간부하": {"summer": 152.4, "spring_fall": 122.0, "winter": 152.6},
+            "최대부하": {"summer": 234.5, "spring_fall": 152.7, "winter": 210.1},
+        },
+    },
+    "A2": {
+        "label": "고압A 선택Ⅱ",
+        "basic_charge": 8320.0,
+        "energy_rates": {
+            "경부하": {"summer": 94.0, "spring_fall": 94.0, "winter": 101.0},
+            "중간부하": {"summer": 147.9, "spring_fall": 116.5, "winter": 147.9},
+            "최대부하": {"summer": 229.0, "spring_fall": 147.2, "winter": 204.6},
+        },
+    },
+    "A3": {
+        "label": "고압A 선택Ⅲ",
+        "basic_charge": 9810.0,
+        "energy_rates": {
+            "경부하": {"summer": 90.9, "spring_fall": 90.9, "winter": 99.1},
+            "중간부하": {"summer": 146.3, "spring_fall": 113.0, "winter": 146.3},
+            "최대부하": {"summer": 216.6, "spring_fall": 139.8, "winter": 193.4},
+        },
+    },
+    "B1": {
+        "label": "고압B 선택Ⅰ",
+        "basic_charge": 6630.0,
+        "energy_rates": {
+            "경부하": {"summer": 105.5, "spring_fall": 105.5, "winter": 113.7},
+            "중간부하": {"summer": 161.7, "spring_fall": 131.7, "winter": 161.7},
+            "최대부하": {"summer": 242.9, "spring_fall": 162.0, "winter": 217.9},
+        },
+    },
+    "B2": {
+        "label": "고압B 선택Ⅱ",
+        "basic_charge": 7380.0,
+        "energy_rates": {
+            "경부하": {"summer": 105.6, "spring_fall": 105.6, "winter": 112.6},
+            "중간부하": {"summer": 157.9, "spring_fall": 127.9, "winter": 157.9},
+            "최대부하": {"summer": 239.1, "spring_fall": 158.2, "winter": 214.1},
+        },
+    },
+    "B3": {
+        "label": "고압B 선택Ⅲ",
+        "basic_charge": 8190.0,
+        "energy_rates": {
+            "경부하": {"summer": 103.9, "spring_fall": 103.9, "winter": 111.0},
+            "중간부하": {"summer": 156.2, "spring_fall": 126.3, "winter": 156.2},
+            "최대부하": {"summer": 237.5, "spring_fall": 156.6, "winter": 212.4},
+        },
+    },
+    "C1": {
+        "label": "고압C 선택Ⅰ",
+        "basic_charge": 6590.0,
+        "energy_rates": {
+            "경부하": {"summer": 108.9, "spring_fall": 108.9, "winter": 115.8},
+            "중간부하": {"summer": 161.8, "spring_fall": 131.8, "winter": 161.4},
+            "최대부하": {"summer": 243.2, "spring_fall": 162.2, "winter": 218.0},
+        },
+    },
+    "C2": {
+        "label": "고압C 선택Ⅱ",
+        "basic_charge": 7520.0,
+        "energy_rates": {
+            "경부하": {"summer": 104.2, "spring_fall": 104.2, "winter": 111.4},
+            "중간부하": {"summer": 157.1, "spring_fall": 127.1, "winter": 156.7},
+            "최대부하": {"summer": 238.0, "spring_fall": 157.5, "winter": 213.7},
+        },
+    },
+    "C3": {
+        "label": "고압C 선택Ⅲ",
+        "basic_charge": 8090.0,
+        "energy_rates": {
+            "경부하": {"summer": 103.1, "spring_fall": 103.1, "winter": 110.0},
+            "중간부하": {"summer": 156.0, "spring_fall": 126.0, "winter": 155.6},
+            "최대부하": {"summer": 236.9, "spring_fall": 156.4, "winter": 212.6},
+        },
+    },
+}
+
+DEFAULT_TARIFF_CODE = "B2"
+
+SEASON_TIME_WINDOWS: Dict[str, Dict[str, List[Tuple[int, int]]]] = {
+    "summer": {
+        "경부하": [(23, 24), (0, 9)],
+        "중간부하": [(9, 11), (12, 13), (17, 23)],
+        "최대부하": [(11, 12), (13, 17)],
+    },
+    "spring_fall": {
+        "경부하": [(23, 24), (0, 9)],
+        "중간부하": [(9, 10), (12, 17), (20, 23)],
+        "최대부하": [(10, 12), (17, 20)],
+    },
+    "winter": {
+        "경부하": [(23, 24), (0, 9)],
+        "중간부하": [(9, 10), (12, 17), (20, 23)],
+        "최대부하": [(10, 12), (17, 20)],
+    },
+}
+
+
+def plan_rates_to_display(energy_rates: Dict[str, Dict[str, float]]) -> pd.DataFrame:
+    rows = []
+    for load in LOAD_ORDER:
+        seasonal = energy_rates.get(load, {})
+        row = {"부하": load}
+        for season_key in SEASON_KEYS:
+            label = SEASON_LABELS[season_key]
+            row[label] = float(seasonal.get(season_key, np.nan))
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 # =========================================
 # Utils
 # =========================================
-def label_tou_for_hour(hour: int, tou: List[TOURate]) -> str:
-    for r in tou:
-        if r.start_hour < r.end_hour:
-            if r.start_hour <= hour < r.end_hour:
-                return r.name
-        else:  # overnight (e.g., 23-7)
-            if hour >= r.start_hour or hour < r.end_hour:
-                return r.name
-    return "기타"
-
 @st.cache_data(show_spinner=False, ttl=3600)
 def generate_demo_data(days: int = 35, seed: int = 42) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
@@ -382,7 +498,7 @@ def infer_15min_kW_kWh(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def preprocess_data(df: pd.DataFrame, tou_rates: List[TOURate]) -> pd.DataFrame:
+def preprocess_data(df: pd.DataFrame, tariff_rates: Dict[str, Dict[str, float]]) -> pd.DataFrame:
     df = df.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.sort_values("timestamp").reset_index(drop=True)
@@ -390,13 +506,28 @@ def preprocess_data(df: pd.DataFrame, tou_rates: List[TOURate]) -> pd.DataFrame:
     df["date"] = df["timestamp"].dt.date
     df["hour"] = df["timestamp"].dt.hour
     df["weekday"] = df["timestamp"].dt.weekday
-    hour_map = {h: label_tou_for_hour(h, tou_rates) for h in range(24)}
-    name_to_rate = {}
-    for r in tou_rates:
-        if r.name not in name_to_rate:
-            name_to_rate[r.name] = r.energy_rate
-    df["TOU"] = df["hour"].map(hour_map)
-    df["unit_price"] = df["TOU"].map(name_to_rate).astype(float)
+    df["season_key"] = df["timestamp"].dt.month.map(month_to_season_key)
+
+    def determine_load(month: int, hour: int) -> str:
+        season = month_to_season_key(month)
+        season_windows = SEASON_TIME_WINDOWS.get(season, {})
+        for load_name, windows in season_windows.items():
+            for start, end in windows:
+                if start <= end:
+                    if start <= hour < end:
+                        return load_name
+                else:  # overnight wrap
+                    if hour >= start or hour < end:
+                        return load_name
+        return LOAD_ORDER[0]
+
+    df["TOU"] = df.apply(lambda row: determine_load(row["timestamp"].month, row["hour"]), axis=1)
+
+    def resolve_unit_price(row) -> float:
+        load_rates = tariff_rates.get(row["TOU"], {})
+        return float(load_rates.get(row["season_key"], 0.0))
+
+    df["unit_price"] = df.apply(resolve_unit_price, axis=1).astype(float)
     return df
 
 def safe_sum(series: pd.Series) -> float:
@@ -770,40 +901,36 @@ if source == "실시간 전기요금 분석":
                 if k in st.session_state: del st.session_state[k]
 
 st.sidebar.subheader("계약/목표 설정")
+if "selected_tariff_code" not in st.session_state:
+    st.session_state.selected_tariff_code = DEFAULT_TARIFF_CODE
+
+tariff_codes = list(TARIFF_PLANS.keys())
+selected_tariff_code = st.sidebar.selectbox(
+    "한전 요금제 선택",
+    tariff_codes,
+    index=tariff_codes.index(st.session_state.selected_tariff_code),
+    format_func=lambda code: TARIFF_PLANS[code]["label"],
+)
+
+st.session_state.selected_tariff_code = selected_tariff_code
+
+plan_info = TARIFF_PLANS[selected_tariff_code]
 contract_power = st.sidebar.number_input("계약전력(kW)", min_value=10.0, value=500.0, step=10.0)
 peak_alert_threshold = st.sidebar.slider("피크 경보 임계치(% of 계약전력)", 50, 120, 90)
-monthly_target_kwh = st.sidebar.number_input("월 목표 사용량(kWh)", min_value=0.0, value=300000.0, step=1000.0)
+st.sidebar.caption(f"{plan_info['label']} 기본요금: {plan_info['basic_charge']:,.0f} 원/kW")
 
-st.sidebar.subheader("시간대별(TOU) 요금")
-tou_list: List[TOURate] = []
-with st.sidebar.expander("TOU 단가 편집 (원/kWh)", expanded=False):
-    for i, r in enumerate(DEFAULT_TOU):
-        c1, c2, c3, c4 = st.columns([1.2,1,1,1.2])
-        with c1: name = st.text_input(f"구간명 {i+1}", value=r.name, key=f"tou_name_{i}")
-        with c2: sh = st.number_input(f"시작시 {i+1}", 0, 23, r.start_hour, key=f"tou_sh_{i}")
-        with c3: eh = st.number_input(f"종료시 {i+1}", 1, 24, r.end_hour, key=f"tou_eh_{i}")
-        with c4: er = st.number_input(f"단가 {i+1}", min_value=0.0, value=r.energy_rate, step=1.0, key=f"tou_er_{i}")
-        tou_list.append(TOURate(name=name, start_hour=sh, end_hour=eh, energy_rate=er))
-
-st.sidebar.subheader("한전 고지서 요소")
-fuel_adj = st.sidebar.number_input("연료비 조정액 (원/kWh)", min_value=-100.0, value=0.0, step=1.0)
-climate_fee = st.sidebar.number_input("기후환경요금 (원/kWh)", min_value=0.0, value=0.0, step=1.0)
-industry_fund_rate = st.sidebar.number_input("전력산업기반기금(%)", min_value=0.0, value=3.7, step=0.1) / 100.0
-vat = st.sidebar.number_input("부가가치세(%)", min_value=0.0, value=10.0, step=0.1) / 100.0
-basic_per_kw = st.sidebar.number_input("기본요금 (원/kW)", min_value=0.0, value=7000.0, step=100.0)
-
-st.sidebar.subheader("목표/비교")
-peer_avg_multiplier = st.sidebar.slider("동종업계 평균 대비 배수", 0.5, 1.5, 0.9)
+st.sidebar.subheader("시간대별(TOU) 요금 (원/kWh)")
+plan_rates_df = plan_rates_to_display(plan_info["energy_rates"])
+st.sidebar.table(plan_rates_df)
 
 bill_inputs = BillInputs(
     contract_power_kw=contract_power,
-    basic_charge_per_kw=basic_per_kw,
-    tou_rates=tou_list,
-    fuel_adj_per_kwh=fuel_adj,
-    climate_per_kwh=climate_fee,
-    industry_fund_rate=industry_fund_rate,
-    vat_rate=vat,
+    basic_charge_per_kw=float(plan_info["basic_charge"]),  # type: ignore[arg-type]
+    tariff_rates={k: v.copy() for k, v in plan_info["energy_rates"].items()},  # shallow copy
+    tariff_code=selected_tariff_code,
+    tariff_label=str(plan_info["label"]),
 )
+peer_avg_multiplier = 0.9
 
 
 st.sidebar.divider()
@@ -872,7 +999,7 @@ if "timestamp" not in raw_df.columns and "측정일시" in raw_df.columns:
 if "kWh" not in raw_df.columns and "전력사용량(kWh)" in raw_df.columns:
     raw_df = raw_df.rename(columns={"전력사용량(kWh)": "kWh"})
 
-df = preprocess_data(raw_df, bill_inputs.tou_rates)
+df = preprocess_data(raw_df, bill_inputs.tariff_rates)
 
 hourly = df.resample("H", on="timestamp").agg(
     kWh=("kWh","sum"),
@@ -1152,7 +1279,7 @@ with load_tab:
         st.info("train.csv에서 1~11월 데이터를 찾을 수 없습니다.")
         pf_view = pd.DataFrame()
     else:
-        pf_view = preprocess_data(train_pf, bill_inputs.tou_rates)
+        pf_view = preprocess_data(train_pf, bill_inputs.tariff_rates)
 
     if pf_view.empty:
         st.info("표시할 스트리밍 데이터가 없습니다.")
@@ -1169,7 +1296,15 @@ with load_tab:
             pf_view["kWh"] = pd.to_numeric(pf_view["kWh"], errors="coerce").fillna(0.0)
 
             if "unit_price" not in pf_view.columns:
-                fallback_price = bill_inputs.tou_rates[0].energy_rate if bill_inputs.tou_rates else 0.0
+                if bill_inputs.tariff_rates:
+                    all_rates = [
+                        float(v)
+                        for season_map in bill_inputs.tariff_rates.values()
+                        for v in season_map.values()
+                    ]
+                    fallback_price = float(np.mean(all_rates)) if all_rates else 0.0
+                else:
+                    fallback_price = 0.0
                 pf_view["unit_price"] = fallback_price
             pf_view["unit_price"] = pd.to_numeric(pf_view["unit_price"], errors="coerce")
             if pf_view["unit_price"].isna().all():
@@ -1881,14 +2016,20 @@ with alert_tab:
 # =========================================
 with bill_tab:
     st.subheader("한전 고지서 구성 기반 요금 계산기")
+    if bill_inputs.tariff_label:
+        st.caption(f"현재 요금제: {bill_inputs.tariff_label} (기본요금 {bill_inputs.basic_charge_per_kw:,.0f} 원/kW)")
     m = this_month.copy()
-    tou_energy = m.groupby("TOU", dropna=False)["kWh"].sum().reset_index()
-    name_to_rate = {}
-    for r_ in bill_inputs.tou_rates:
-        if r_.name not in name_to_rate:
-            name_to_rate[r_.name] = r_.energy_rate
-    tou_energy["unit_price"] = tou_energy["TOU"].map(name_to_rate).astype(float)
-    tou_energy["energy_charge"] = tou_energy["kWh"] * tou_energy["unit_price"]
+    tou_energy = (
+        m.assign(energy_value=m["kWh"] * m["unit_price"])
+        .groupby("TOU", dropna=False)
+        .agg(kWh=("kWh", "sum"), energy_charge=("energy_value", "sum"))
+        .reset_index()
+    )
+    tou_energy["unit_price"] = np.where(
+        tou_energy["kWh"] != 0,
+        tou_energy["energy_charge"] / tou_energy["kWh"],
+        np.nan,
+    )
 
     energy_charge = float(tou_energy["energy_charge"].sum())
     basic_charge = bill_inputs.contract_power_kw * bill_inputs.basic_charge_per_kw
