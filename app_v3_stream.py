@@ -128,78 +128,6 @@ def render_tou_chart(df_acc: pd.DataFrame, placeholder):
     placeholder.altair_chart(tou_chart, use_container_width=True)
 
 
-# =========================================
-# 역률 시각화 함수 (create_combined_pf_chart)
-# =========================================
-# def create_combined_pf_chart(df, x_axis):
-#     """주간/야간 구분 역률 통합 시각화 (app.py 원본)"""
-#     pf_data = df[['측정일시', '지상역률_주간클립', '진상역률(%)', '주간여부', '야간여부']].copy()
-#     pf_data = pf_data[(pf_data['지상역률_주간클립'] > 0) | (pf_data['진상역률(%)'] > 0)]
-#     if pf_data.empty:
-#         return None
-
-#     pf_long = pf_data.melt(
-#         id_vars=['측정일시', '주간여부', '야간여부'],
-#         value_vars=['지상역률_주간클립', '진상역률(%)'],
-#         var_name='역률종류',
-#         value_name='역률값'
-#     )
-
-#     def get_display_type(row):
-#         if row['역률종류'] == '지상역률_주간클립':
-#             return '지상 (주간기준)' if row['주간여부'] == 1 else '지상 (야간)'
-#         elif row['역률종류'] == '진상역률(%)':
-#             return '진상 (야간기준)' if row['야간여부'] == 1 else '진상 (주간)'
-#         return '기타'
-
-#     pf_long['표시유형'] = pf_long.apply(get_display_type, axis=1)
-#     pf_long['역률종류'] = pf_long['역률종류'].replace({
-#         '지상역률_주간클립': '지상역률', '진상역률(%)': '진상역률'
-#     })
-#     pf_long['is_important'] = pf_long['표시유형'].isin(['지상 (주간기준)', '진상 (야간기준)'])
-#     pf_long = pf_long.sort_values(by=['역률종류', '측정일시'])
-#     pf_long['is_important_changed'] = pf_long.groupby('역률종류')['is_important'].diff().ne(0)
-#     pf_long['segment_group'] = pf_long.groupby('역률종류')['is_important_changed'].cumsum()
-
-#     # 베이스 (얇은 점선)
-#     base_dashed_lines = alt.Chart(pf_long).mark_line(
-#         point=False, strokeWidth=1, strokeDash=[4, 4]
-#     ).encode(
-#         x=x_axis,
-#         y=alt.Y('역률값:Q', title="역률 (%)", scale=alt.Scale(domain=[85, 101])),
-#         color=alt.Color('역률종류:N',
-#             scale=alt.Scale(domain=['지상역률', '진상역률'], range=['darkorange', 'steelblue']),
-#             legend=alt.Legend(title="역률 종류")
-#         ),
-#         detail='역률종류:N',
-#         order=alt.Order('측정일시:T'),
-#         tooltip=['측정일시', '역률종류', alt.Tooltip('역률값', format=',.2f'), '표시유형']
-#     )
-
-#     # 강조 (굵은 실선)
-#     overlay_solid_lines = alt.Chart(pf_long).mark_line(
-#         point=False, strokeWidth=2.5
-#     ).encode(
-#         x=x_axis,
-#         y='역률값:Q',
-#         color=alt.Color('역률종류:N',
-#             scale=alt.Scale(domain=['지상역률', '진상역률'], range=['darkorange', 'steelblue'])
-#         ),
-#         detail=alt.Detail(['역률종류:N', 'segment_group:Q']),
-#         order=alt.Order('측정일시:T'),
-#         tooltip=['측정일시', '역률종류', alt.Tooltip('역률값', format=',.2f'), '표시유형']
-#     ).transform_filter(alt.datum.is_important == True)
-
-#     # 기준선 (90%, 95%)
-#     rule90 = alt.Chart(pd.DataFrame({'y': [90]})).mark_rule(
-#         color='darkorange', strokeDash=[2,2], opacity=1, strokeWidth=1.5
-#     ).encode(y='y:Q')
-#     rule95 = alt.Chart(pd.DataFrame({'y': [95]})).mark_rule(
-#         color='steelblue', strokeDash=[2,2], opacity=1, strokeWidth=1.5
-#     ).encode(y='y:Q')
-
-#     return (base_dashed_lines + overlay_solid_lines + rule90 + rule95).properties().interactive()
-
 
 
 def create_combined_pf_chart(df_pf, shared_x=None):
@@ -384,7 +312,7 @@ def show_chatbot():
 # Page Config
 # =========================================
 st.set_page_config(
-    page_title="Industrial Energy & KEPCO Billing Dashboard",
+    page_title="5조짱〰️5조최고〰️",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1103,12 +1031,55 @@ this_month = df[df["timestamp"].dt.to_period("M") == month_key]
 prev_month = df[df["timestamp"].dt.to_period("M") == (month_key - 1)]
 
 # =========================================
-# Top KPIs
+# Top Title and Logo
 # =========================================
-st.title("⚡ 산업용 전기요금 모니터링 & 한전 고지서 대시보드")
-st.caption("모델 예측 스트리밍/실시간 + EMS/PMS 기능 + 한전 고지서 항목을 통합")
+# 1. 타이틀과 로고를 위한 컬럼 분할
+col_title, col_logo = st.columns([3.6, 1.4])
 
-colA, colB, colC, colD = st.columns(4)
+with col_title:
+
+    st.markdown(
+        """
+        <p style="font-size: 43px; font-weight: bold;">
+            ⚡ LS 청주1공장 산업용 전력 모니터
+        </p>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+
+    st.markdown(
+    """
+    <p style="font-size: 23px; color: #FF005A; font-weight: bold; margin-top: 10px;">
+        ⚠️ [대외비] 본 데이터는 승인된 내부 정보입니다.<br> 
+    </p>
+    """, unsafe_allow_html=True)
+
+
+    st.markdown(
+    """
+    <p style="font-size: 23px; color: #003399; font-weight: bold; margin-top: 10px;">
+        총무팀의 업무 목적 외 무단 복제, 배포 및 활용을 엄격히 금합니다.
+    </p>
+    """, unsafe_allow_html=True)
+
+with col_logo:
+    # use_container_width=True는 컬럼 너비에 맞춥니다.
+    # 로고를 위로 올리기 위해 컬럼 내에서 이미지를 바로 배치합니다.
+    # 작은 이미지의 경우 width를 지정하는 것이 더 깔끔할 수 있습니다. (예: width=100)
+    st.image("./LS.png", use_container_width=True)
+
+# =========================================
+# 간격 추가 (Space Insertion)
+# =========================================
+st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
+
+
+# =========================================
+# Top KPIs 
+# =========================================
+# colA, colB, colC, colD = st.columns(4)
+colA, colB, colC, colD = st.columns(4, gap="large")
+
 tm_kwh = safe_sum(this_month["kWh"]) if not this_month.empty else 0.0
 pm_kwh = safe_sum(prev_month["kWh"]) if not prev_month.empty else np.nan
 pct = ((tm_kwh - pm_kwh) / pm_kwh * 100.0) if (isinstance(pm_kwh, float) and not math.isnan(pm_kwh) and pm_kwh > 0) else np.nan
@@ -1121,6 +1092,8 @@ colC.metric("가중평균 단가 (원/kWh)", f"{weighted_price:,.0f}" if (isinst
 colD.metric("월 예상 전력량요금 (원)", f"{est_energy_charge:,.0f}")
 
 st.divider()
+
+
 
 # =========================================
 # Tabs
