@@ -229,7 +229,7 @@ def show_chatbot():
 # Page Config
 # =========================================
 st.set_page_config(
-    page_title="5조짱〰️5조최고〰️",
+    page_title="LS빅데이터스쿨 5기 최고〰️",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
