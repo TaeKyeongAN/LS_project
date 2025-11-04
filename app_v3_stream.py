@@ -130,55 +130,138 @@ def render_tou_chart(df_acc: pd.DataFrame, placeholder):
 
 
 
-def create_combined_pf_chart(df, x_axis):
-    """실시간 통합 역률 차트 (NaN 안전/최소 포인트 보장)"""
-    if df is None or df.empty:
-        return None
+def create_combined_pf_chart(df_pf, shared_x=None):
+    """
+    실시간 통합 역률 추이 (지상역률/진상역률)
+    - 지상역률: 09~23시 실선, 23~09시 점선
+    - 진상역률: 23~09시 실선, 09~23시 점선
+    - 기준선 표시 (지상: 90%, 진상: 95%)
+    - 범례: '지상역률' / '진상역률'로 표시
+    """
+    import altair as alt
+    import pandas as pd
 
-    pf_data = df[["측정일시", "지상역률_주간클립", "진상역률(%)", "주간여부", "야간여부"]].copy()
+    # Data copy & Validation
+    df_pf = df_pf.copy()
+    if df_pf.empty:
+        return alt.Chart(pd.DataFrame()).properties(title="데이터 없음", height=400)
+        
+    df_pf["hour"] = df_pf["측정일시"].dt.hour
 
-    # NaN → 0 처리 후, 값이 전부 0인 경우만 제외
-    pf_data[["지상역률_주간클립", "진상역률(%)"]] = pf_data[["지상역률_주간클립", "진상역률(%)"]].fillna(0)
-    if (pf_data[["지상역률_주간클립", "진상역률(%)"]].sum().sum() == 0) or (len(pf_data) < 2):
-        return None
+    # Flags
+    # 주간 (Daytime): 09시 이상 ~ 23시 미만 (9, 10, ..., 22시)
+    is_day = ((df_pf["hour"] >= 9) & (df_pf["hour"] < 23))
+    # 야간 (Nighttime): 23시 이상 또는 9시 미만 (23, 0, ..., 8시)
+    is_night = ((df_pf["hour"] >= 23) | (df_pf["hour"] < 9))
 
-    pf_long = pf_data.melt(
-        id_vars=["측정일시", "주간여부", "야간여부"],
-        value_vars=["지상역률_주간클립", "진상역률(%)"],
-        var_name="역률종류",
-        value_name="역률값"
-    )
-    pf_long["역률종류"] = pf_long["역률종류"].replace({
-        "지상역률_주간클립": "지상역률", "진상역률(%)": "진상역률"
-    })
-
-    color_scale = alt.Scale(domain=["지상역률", "진상역률"], range=["darkorange", "steelblue"])
-
-    line = (
-        alt.Chart(pf_long)
-        .mark_line(point=False, interpolate="monotone", strokeWidth=2)
-        .encode(
-            x=x_axis,
-            y=alt.Y("역률값:Q", title="역률 (%)", scale=alt.Scale(domain=[84, 102])),
-            color=alt.Color("역률종류:N", scale=color_scale, title="역률 종류"),
-            tooltip=[
-                alt.Tooltip("측정일시:T", title="시간"),
-                alt.Tooltip("역률종류:N", title="유형"),
-                alt.Tooltip("역률값:Q", title="값", format=",.2f")
-            ],
+    # Base axis & Y-scale
+    if shared_x is None:
+        latest_time = df_pf["측정일시"].max()
+        start_domain = latest_time - pd.Timedelta(hours=24) if pd.notna(latest_time) else None
+        
+        shared_x = alt.X(
+            "측정일시:T", title="시간",
+            scale=alt.Scale(domain=[start_domain, latest_time]) if start_domain else alt.Undefined
         )
-        .properties(height=260)
+        
+    y_encoding = alt.Y("역률값:Q", title="역률(%)", scale=alt.Scale(domain=[85, 101])) 
+    
+    # 색상 정의
+    COLOR_LAG = '#F39C12' # 주황: 지상역률
+    COLOR_LEAD = '#2980B9' # 파랑: 진상역률
+    
+    # 데이터셋에 레이블 추가 (범례용)
+    df_pf['지상역률_Label'] = '지상역률'
+    df_pf['진상역률_Label'] = '진상역률'
+
+    # ----------------------------------------------------
+    # ① 지상역률 (주간: 실선, 야간: 점선)
+    # ----------------------------------------------------
+    
+    # 주간 실선 (Daytime Solid)
+    chart_lag_day_solid = alt.Chart(df_pf[is_day]).mark_line(
+        point=False, strokeWidth=2.5, color=COLOR_LAG
+    ).encode(
+        x=shared_x, y=alt.Y("지상역률_주간클립:Q", title="역률(%)", scale=alt.Scale(domain=[85, 101])),
+        # 범례에 사용될 컬럼과 색상 지정
+        color=alt.Color('지상역률_Label:N', scale=alt.Scale(domain=['지상역률', '진상역률'], range=[COLOR_LAG, COLOR_LEAD]), legend=alt.Legend(title="역률 종류")),
+        tooltip=['측정일시:T', alt.Tooltip('지상역률_주간클립:Q', format=',.2f', title='지상역률(주간)')]
     )
 
-    rule90 = alt.Chart(pd.DataFrame({"y": [90]})).mark_rule(
-        color="darkorange", strokeDash=[4, 4], strokeWidth=1.5
-    ).encode(y="y:Q")
-    rule95 = alt.Chart(pd.DataFrame({"y": [95]})).mark_rule(
-        color="steelblue", strokeDash=[4, 4], strokeWidth=1.5
-    ).encode(y="y:Q")
+    # 야간 점선 (Nighttime Dotted)
+    chart_lag_night_dotted = alt.Chart(df_pf[is_night]).mark_line(
+        point=False, strokeWidth=1.5, strokeDash=[5, 4], color=COLOR_LAG
+    ).encode(
+        x=shared_x, y=alt.Y("지상역률_주간클립:Q"),
+        color=alt.value(COLOR_LAG), # 범례 중복을 피하기 위해 value 사용
+        tooltip=['측정일시:T', alt.Tooltip('지상역률_주간클립:Q', format=',.2f', title='지상역률(야간)')]
+    )
 
-    return (line + rule90 + rule95).interactive(bind_y=False)
+    # ----------------------------------------------------
+    # ② 진상역률 (야간: 실선, 주간: 점선)
+    # ----------------------------------------------------
 
+    # 야간 실선 (Nighttime Solid)
+    chart_lead_night_solid = alt.Chart(df_pf[is_night]).mark_line(
+        point=False, strokeWidth=2.5, color=COLOR_LEAD
+    ).encode(
+        x=shared_x, y=alt.Y("진상역률(%):Q"),
+        color=alt.Color('진상역률_Label:N', scale=alt.Scale(domain=['지상역률', '진상역률'], range=[COLOR_LAG, COLOR_LEAD])),
+        tooltip=['측정일시:T', alt.Tooltip('진상역률(%):Q', format=',.2f', title='진상역률(야간)')]
+    )
+
+    # 주간 점선 (Daytime Dotted)
+    chart_lead_day_dotted = alt.Chart(df_pf[is_day]).mark_line(
+        point=False, strokeWidth=1.5, strokeDash=[5, 4], color=COLOR_LEAD
+    ).encode(
+        x=shared_x, y=alt.Y("진상역률(%):Q"),
+        color=alt.value(COLOR_LEAD), # 범례 중복을 피하기 위해 value 사용
+        tooltip=['측정일시:T', alt.Tooltip('진상역률(%):Q', format=',.2f', title='진상역률(주간)')]
+    )
+    
+    # ----------------------------------------------------
+    # ③ 기준선 및 텍스트
+    # ----------------------------------------------------
+    
+    baseline_lag = (
+        alt.Chart(pd.DataFrame({"y": [90]}))
+        .mark_rule(color=COLOR_LAG, strokeDash=[6, 3], strokeWidth=1.5)
+        .encode(y="y:Q")
+    )
+
+    baseline_lead = (
+        alt.Chart(pd.DataFrame({"y": [95]}))
+        .mark_rule(color=COLOR_LEAD, strokeDash=[6, 3], strokeWidth=1.5)
+        .encode(y="y:Q")
+    )
+    
+    text_lag = alt.Chart(pd.DataFrame({"y": [90]})).mark_text(
+        text="지상기준선 90%", align='left', baseline='top', dx=5, dy=-10, color=COLOR_LAG, fontSize=10
+    ).encode(y='y:Q')
+    
+    text_lead = alt.Chart(pd.DataFrame({"y": [95]})).mark_text(
+        text="진상기준선 95%", align='left', baseline='bottom', dx=5, dy=10, color=COLOR_LEAD, fontSize=10
+    ).encode(y='y:Q')
+
+
+    # ----------------------------------------------------
+    # ④ 최종 결합
+    # ----------------------------------------------------
+    # 순서: 점선 -> 실선 -> 기준선 순으로 겹쳐서 그림
+    combined_chart = (
+        chart_lag_night_dotted + chart_lead_day_dotted + # 점선 (배경)
+        chart_lag_day_solid + chart_lead_night_solid +   # 실선 (강조)
+        baseline_lag + baseline_lead + text_lag + text_lead
+    ).properties(
+        title="⚙️ 실시간 통합 역률 추이", 
+        height=400
+    ).configure_title(
+        fontSize=16, anchor="start"
+    ).configure_axis(
+        labelFontSize=12, titleFontSize=13
+    ).interactive()
+
+    return combined_chart
 
 
 
@@ -1023,164 +1106,204 @@ main_tab, feature_tab, load_tab, alert_tab, bill_tab, report_tab = st.tabs(
 # Main Dashboard
 # =========================================
 with main_tab:
-    left, right = st.columns([1.2, 1])
-    with left:
-        # ── 그래프 제목(항상 상단 고정) ──────────────────────────────────
-        st.subheader(" ")
-        # st.markdown("#### ⚡ 실시간 전력사용량 추이")
-        chart_placeholder = st.empty()
-        
-        
-        
-        st.markdown("#### 실시간 전기요금 추이")
+    st.subheader("⚡ 실시간 사용량 & 요금 추정 (Streaming 확장)")
+
+    # 좌우 그래프 (50:50)
+    col_chart1, col_chart2 = st.columns(2)
+
+    with col_chart1:
+        st.markdown("#### 💰 12월 시간대별 예측 요금 추이")
         tou_chart_placeholder = st.empty()
-        
-        
-        st.markdown("#### 실시간 통합 역률 추이")
+    with col_chart2:
+        st.markdown("#### ⚙️ 실시간 통합 역률 추이")
         pf_chart_placeholder = st.empty()
+
+    # 하단 메트릭
+    mc1, mc2 = st.columns(2)
+    total_bill_metric = mc1.empty()
+    total_usage_metric = mc2.empty()
+    latest_placeholder = st.empty()
+
+    # ====================================================
+    # 📈 렌더 함수 (탭 내부 정의)
+    # ====================================================
+    def render_stream_views(df_acc):
+        """실시간 스트리밍 데이터 시각화 (x축 고정 + 최근 24시간 윈도우 유지)"""
+        if df_acc.empty:
+            return
+        df_acc = df_acc[df_acc["timestamp"] >= df_acc["timestamp"].max() - pd.Timedelta(hours=24)].copy()
+
+        # ───────────────────────────────
+        # 1️⃣ X축 범위 (domain) 계산
+        # ───────────────────────────────
+        latest_time = df_acc["timestamp"].max()
+
+        # 최초 스트리밍 시작 시점 저장
+        if "stream_start_time" not in st.session_state:
+            st.session_state.stream_start_time = df_acc["timestamp"].min()
+
+        # 최근 24시간 윈도우 유지 (고정된 시작점부터 오른쪽으로 이동)
+        window = pd.Timedelta(hours=24)
+        end_domain = latest_time
+        start_domain = max(st.session_state.stream_start_time, end_domain - window)
+
+        shared_x = alt.X(
+            "timestamp:T",
+            title="시간",
+            scale=alt.Scale(domain=[start_domain, end_domain]),
+        )
+
+        # ───────────────────────────────
+        # 💰 예측 요금 추이 (연속형 + Load 색상 포인트)
+        # ───────────────────────────────
+        df_tou = df_acc.copy()
+        df_tou["측정일시"] = pd.to_datetime(df_tou["timestamp"], errors="coerce")
+        df_tou = df_tou.sort_values("측정일시").reset_index(drop=True)
         
-        # 메트릭
-        mc1, mc2 = st.columns(2)
-        total_bill_metric = mc1.empty()
-        total_usage_metric = mc2.empty()
-        latest_placeholder = st.empty()
+        def worktype(h):
+            if (h >= 23 or h < 7): return "Light_Load"
+            if 10 <= h < 18:       return "Maximum_Load"
+            return "Medium_Load"
         
-        # ── 공통 렌더 함수 (재생/일시정지 동일 사용) ────────────────────
-        def render_stream_views(df_acc):
-            if df_acc.empty:
-                return
+        def tou_price(h):
+            if (h >= 23 or h < 7): return 90
+            if 10 <= h < 18:       return 160
+            return 120
         
-            latest_time = df_acc["timestamp"].max()
-            start_domain = latest_time - pd.Timedelta(hours=24) if pd.notna(latest_time) else None
-            shared_x = alt.X(
-                "timestamp:T", title="시간",
-                scale=alt.Scale(domain=[start_domain, latest_time]) if start_domain else alt.Undefined
+        hours = df_tou["측정일시"].dt.hour
+        df_tou["작업유형"] = hours.apply(worktype)
+        df_tou["예측요금(원)"] = df_tou["kWh"] * hours.apply(tou_price)
+        
+        # 색상 매핑
+        color_map = {
+            "Light_Load": "forestgreen",
+            "Medium_Load": "gold",
+            "Maximum_Load": "firebrick"
+        }
+        
+        # 1️⃣ 기본 선 (하나의 연속선)
+        base_line = (
+            alt.Chart(df_tou)
+            .mark_line(interpolate="monotone", strokeWidth=2.5, color="#555")
+            .encode(
+                x=shared_x,
+                y=alt.Y("예측요금(원):Q", title="예측요금 (원)"),
+                tooltip=[
+                    alt.Tooltip("측정일시:T", title="시간"),
+                    alt.Tooltip("예측요금(원):Q", format=",.0f"),
+                ],
             )
+        )
         
-            # # ① kWh 라인
-            # chart = (
-            #     alt.Chart(df_acc)
-            #     .mark_line(point=True, interpolate="monotone")
-            #     .encode(
-            #         x=shared_x,
-            #         y=alt.Y("kWh:Q", title="전력사용량 (kWh)"),
-            #         tooltip=["timestamp", alt.Tooltip("kWh:Q", format=",.2f")]
-            #     )
-            #     .properties(height=250)
-            # )
-            # chart_placeholder.altair_chart(chart, use_container_width=True)
+        # 2️⃣ 색상 포인트 (Load Type 표시)
+        points = (
+            alt.Chart(df_tou)
+            .mark_point(size=50)
+            .encode(
+                x="측정일시:T",
+                y="예측요금(원):Q",
+                color=alt.Color("작업유형:N",
+                                scale=alt.Scale(domain=list(color_map.keys()),
+                                                range=list(color_map.values())),
+                                legend=alt.Legend(title="작업유형")),
+                tooltip=[
+                    alt.Tooltip("측정일시:T", title="시간"),
+                    alt.Tooltip("작업유형:N", title="부하 구간"),
+                    alt.Tooltip("예측요금(원):Q", format=",.0f"),
+                ]
+            )
+        )
         
-            # ② 역률(임시/데모 생성 로직)
-            df_pf = df_acc.copy()
-            df_pf["측정일시"] = pd.to_datetime(df_pf["timestamp"], errors="coerce")
-            # 필요한 컬럼 없으면 임시 난수 생성
-            if "지상역률_주간클립" not in df_pf.columns:
-                df_pf["지상역률_주간클립"] = np.random.uniform(88, 99, len(df_pf))
-            if "진상역률(%)" not in df_pf.columns:
-                df_pf["진상역률(%)"] = np.random.uniform(93, 100, len(df_pf))
-            df_pf["주간여부"] = ((df_pf["측정일시"].dt.hour >= 9) & (df_pf["측정일시"].dt.hour <= 23)).astype(int)
-            df_pf["야간여부"] = ((df_pf["측정일시"].dt.hour < 9) | (df_pf["측정일시"].dt.hour >= 23)).astype(int)
+        # 3️⃣ 결합
+        chart_tou = (base_line + points).properties(
+            width=800, height=400, title="💰 12월 시간대별 예측 요금 추이"
+        ).configure_legend(
+            orient="top-right", labelFontSize=11, titleFontSize=12,
+            direction="vertical", symbolSize=80, padding=10
+        )
         
-            pf_chart = create_combined_pf_chart(df_pf, shared_x)
-            if pf_chart:
-                pf_chart_placeholder.altair_chart(pf_chart, use_container_width=True)
+        tou_chart_placeholder.altair_chart(chart_tou, use_container_width=True)
+
+
+        # ───────────────────────────────
+        # 3️⃣ ⚙️ 역률 그래프
+        # ───────────────────────────────
+        df_pf = df_acc.copy()
+        df_pf["측정일시"] = pd.to_datetime(df_pf["timestamp"], errors="coerce")
+        if "지상역률_주간클립" not in df_pf.columns:
+            df_pf["지상역률_주간클립"] = np.random.uniform(88, 99, len(df_pf))
+        if "진상역률(%)" not in df_pf.columns:
+            df_pf["진상역률(%)"] = np.random.uniform(93, 100, len(df_pf))
+
+        df_pf["주간여부"] = ((df_pf["측정일시"].dt.hour >= 9) & (df_pf["측정일시"].dt.hour <= 23)).astype(int)
+        df_pf["야간여부"] = ((df_pf["측정일시"].dt.hour < 9) | (df_pf["측정일시"].dt.hour >= 23)).astype(int)
+
+        pf_chart = (
+            alt.Chart(df_pf)
+            .transform_fold(["지상역률_주간클립", "진상역률(%)"], as_=["유형", "값"])
+            .mark_line(point=True, interpolate="monotone", strokeWidth=2)
+            .encode(
+                x=shared_x,
+                y=alt.Y("값:Q", title="역률 (%)"),
+                color=alt.Color("유형:N", title="역률 종류",
+                                scale=alt.Scale(range=["#FF9500", "#007AFF"])),
+                tooltip=[
+                    alt.Tooltip("측정일시:T", title="시간"),
+                    alt.Tooltip("유형:N", title="유형"),
+                    alt.Tooltip("값:Q", format=".2f"),
+                ],
+            )
+            .properties(width=750, height=400)
+            .configure_legend(
+                orient="top-right", labelFontSize=11, titleFontSize=12,
+                direction="vertical", symbolSize=80, padding=10
+            )
+        )
+
+        pf_chart_placeholder.altair_chart(pf_chart, use_container_width=True)
+
+    # ====================================================
+    # ▶ 스트리밍 제어부
+    # ====================================================
+    if source == "실시간 전기요금 분석":
+        src = st.session_state.get("stream_source_df", None)
+
+        if st.session_state.get("streaming_running", False) and src is not None:
+            while st.session_state.get("streaming_running", False) and \
+                st.session_state.get("stream_idx", 0) < len(src):
+
+                idx = st.session_state.get("stream_idx", 0)
+                batch = src.iloc[[idx]].copy()
+                st.session_state.stream_idx = idx + 1
+
+                acc = st.session_state.get("stream_accum_df", pd.DataFrame(columns=src.columns))
+                st.session_state.stream_accum_df = pd.concat([acc, batch], ignore_index=True)
+
+                kwh = float(batch["kWh"].iloc[0])
+                st.session_state.total_bill = st.session_state.get("total_bill", 0.0) + kwh * 150
+                st.session_state.total_usage = st.session_state.get("total_usage", 0.0) + kwh
+
+                df_acc = st.session_state.stream_accum_df.copy()
+                render_stream_views(df_acc)
+
+                total_bill_metric.metric("누적 요금(원)", f"{st.session_state.total_bill:,.0f}")
+                total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.total_usage:,.2f}")
+                latest_placeholder.info(f"📈 최근 갱신: {batch['timestamp'].iloc[0]} | {kwh:.2f} kWh")
+
+                time.sleep(0.3)
+
+            if st.session_state.get("stream_idx", 0) >= len(src):
+                st.session_state.streaming_running = False
+                st.success("✅ 스트리밍 완료!")
+
+        else:
+            if "stream_accum_df" in st.session_state and len(st.session_state.stream_accum_df) > 0:
+                render_stream_views(st.session_state.stream_accum_df.copy())
+                total_bill_metric.metric("누적 요금(원)", f"{st.session_state.get('total_bill',0):,.0f}")
+                total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.get('total_usage',0):,.2f}")
+                st.info("⏸ 일시정지 — [시작/재개] 버튼을 눌러 스트리밍 재개")
             else:
-                pf_chart_placeholder.info("역률 데이터가 부족하여 표시할 수 없습니다.")
-        
-            # ③ TOU/작업유형 라인 (app.py 방식)
-            df_tou = df_acc.copy()
-            df_tou["측정일시"] = pd.to_datetime(df_tou["timestamp"], errors="coerce")
-            df_tou = df_tou.sort_values("측정일시").reset_index(drop=True)
-        
-            # 작업유형/TOU 그룹 매핑
-            def worktype(h):
-                if (h >= 23 or h < 7): return "Light_Load"
-                if 10 <= h < 18:       return "Maximum_Load"
-                return "Medium_Load"
-            hours = df_tou["측정일시"].dt.hour
-            df_tou["작업유형"] = hours.apply(worktype)
-            # 작업유형이 바뀔 때 선이 끊기지 않도록 세그먼트 그룹
-            df_tou["segment_group"] = (df_tou["작업유형"] != df_tou["작업유형"].shift(1)).cumsum()
-        
-            # 예측요금(원)
-            def tou_price(h):
-                if (h >= 23 or h < 7): return 90
-                if 10 <= h < 18:       return 160
-                return 120
-            df_tou["예측요금(원)"] = df_tou["kWh"] * hours.apply(tou_price)
-        
-            color_scale = alt.Scale(
-                domain=["Light_Load", "Medium_Load", "Maximum_Load"],
-                range=["forestgreen", "gold", "firebrick"]
-            )
-            chart_tou = (
-                alt.Chart(df_tou)
-                .mark_line(point=True, interpolate="monotone", strokeWidth=2)
-                .encode(
-                    x=alt.X("측정일시:T", title="측정일시",
-                            scale=alt.Scale(domain=[start_domain, latest_time])),
-                    y=alt.Y("예측요금(원):Q", title="예측요금 (원)"),
-                    color=alt.Color("작업유형:N", scale=color_scale, title="작업 유형"),
-                    detail="segment_group:Q",
-                    order=alt.Order("측정일시:T"),
-                    tooltip=[
-                        alt.Tooltip("측정일시:T", title="시간"),
-                        alt.Tooltip("작업유형:N", title="구간"),
-                        alt.Tooltip("예측요금(원):Q", format=",.0f"),
-                    ],
-                )
-                .interactive(bind_y=False)
-                .properties(height=250)
-            )
-            tou_chart_placeholder.altair_chart(chart_tou, use_container_width=True)
-        
-        # ── 스트리밍 제어 ───────────────────────────────────────────────
-        if source == "실시간 전기요금 분석":
-            src = st.session_state.get("stream_source_df", None)
-        
-            # ▶ 재생 중 : while 루프로 연속 업데이트(무 rerun)
-            if st.session_state.get("streaming_running", False) and src is not None:
-                # 한 번 실행 안에서 계속 소비 (스크롤 점프 없음)
-                while st.session_state.get("streaming_running", False) and \
-                    st.session_state.get("stream_idx", 0) < len(src):
-        
-                    idx = st.session_state.get("stream_idx", 0)
-                    batch = src.iloc[[idx]].copy()
-                    st.session_state.stream_idx = idx + 1
-        
-                    acc = st.session_state.get("stream_accum_df", pd.DataFrame(columns=src.columns))
-                    st.session_state.stream_accum_df = pd.concat([acc, batch], ignore_index=True)
-        
-                    # 누적 메트릭
-                    kwh = float(batch["kWh"].iloc[0])
-                    st.session_state.total_bill = st.session_state.get("total_bill", 0.0) + kwh * 150
-                    st.session_state.total_usage = st.session_state.get("total_usage", 0.0) + kwh
-        
-                    # 렌더
-                    df_acc = st.session_state.stream_accum_df.copy()
-                    render_stream_views(df_acc)
-        
-                    total_bill_metric.metric("누적 요금(원)", f"{st.session_state.total_bill:,.0f}")
-                    total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.total_usage:,.2f}")
-                    latest_placeholder.info(f"📈 최근 갱신: {batch['timestamp'].iloc[0]} | {kwh:.2f} kWh")
-        
-                    # 살짝 대기 후 다음 포인트로
-                    time.sleep(0.3)
-        
-                # 모두 소비했으면 상태 변경
-                if st.session_state.get("stream_idx", 0) >= len(src):
-                    st.session_state.streaming_running = False
-                    st.success("✅ 스트리밍 완료!")
-        
-            # ⏸ 일시정지 : 현재 누적 데이터 그대로 렌더
-            else:
-                if "stream_accum_df" in st.session_state and len(st.session_state.stream_accum_df) > 0:
-                    render_stream_views(st.session_state.stream_accum_df.copy())
-                    total_bill_metric.metric("누적 요금(원)", f"{st.session_state.get('total_bill',0):,.0f}")
-                    total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.get('total_usage',0):,.2f}")
-                    st.info("⏸ 일시정지 — [시작/재개] 버튼을 눌러 스트리밍 재개")
-                else:
-                    st.warning("▶️ [시작/재개] 버튼을 눌러 실시간 스트리밍을 시작하세요.")
+                st.warning("▶️ [시작/재개] 버튼을 눌러 실시간 스트리밍을 시작하세요.")
 
 
 
