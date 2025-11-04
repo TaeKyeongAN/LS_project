@@ -254,9 +254,9 @@ def create_combined_pf_chart(df_pf, shared_x=None):
 # ==============================
 # 🤖 Chatbot Modal (from app.py)
 # ==============================
-@st.dialog("🤖 챗봇")
+@st.dialog("🤖 전력 관리 담당자")
 def show_chatbot():
-    """st.dialog를 사용하여 모달 챗봇 UI를 표시합니다."""
+    """st.dialog를 사용하여 전력 관리 담당자 연락 UI를 표시합니다."""
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = [
             {"role": "assistant", "content": "안녕하세요!\n 전력 모니터 관련 질문에 답변해 드립니다."}
@@ -862,48 +862,43 @@ def generate_bill_pdf(report_data, comparison_df=None):
 # Sidebar — Data Source & Params
 # =========================================
 st.sidebar.header("⚙️ 설정")
-# ✅ 모델 스트리밍 소스 추가
-source = st.sidebar.radio(
-    "데이터 소스",
-    ["실시간 전기요금 분석", "CSV 업로드"],
-    horizontal=False
-)
 
-# Streaming controls (only visible for "실시간 전기요금 분석")
-if source == "실시간 전기요금 분석":
-    st.sidebar.markdown("**실시간 예측 스트리밍 제어**")
-    col_s1, col_s2, col_s3 = st.sidebar.columns([1,1,1])
-    with col_s1:
-        if st.button("▶️ 시작/재개", key="btn_start"):
-            st.session_state.streaming_running = True
-            # 초기화: 파일을 로딩하고, 누적 버퍼 준비
-            if "stream_source_df" not in st.session_state:
-                try:
-                    src = pd.read_csv("./data/predicted_test_data.csv")
-                except FileNotFoundError:
-                    st.sidebar.error("`./data/predicted_test_data.csv`를 찾을 수 없습니다.")
-                    st.stop()
-                # 표준화
-                if "timestamp" not in src.columns and "측정일시" in src.columns:
-                    src = src.rename(columns={"측정일시": "timestamp"})
-                if "kWh" not in src.columns and "전력사용량(kWh)" in src.columns:
-                    src = src.rename(columns={"전력사용량(kWh)": "kWh"})
-                src["timestamp"] = pd.to_datetime(src["timestamp"])
-                src = src.sort_values("timestamp").reset_index(drop=True)
-                st.session_state.stream_source_df = src
-                st.session_state.stream_idx = 0
-                st.session_state.stream_accum_df = pd.DataFrame(columns=src.columns)
-                st.session_state.total_bill = 0.0
-                st.session_state.total_usage = 0.0
-                st.session_state.last_timestamp = None
-    with col_s2:
-        if st.button("⏸️ 일시정지", key="btn_pause"):
-            st.session_state.streaming_running = False
-    with col_s3:
-        if st.button("⏹️ 정지/초기화", key="btn_stop"):
-            st.session_state.streaming_running = False
-            for k in ["stream_source_df","stream_idx","stream_accum_df"]:
-                if k in st.session_state: del st.session_state[k]
+source = "실시간 전기요금 분석"
+
+
+st.sidebar.markdown("**실시간 예측 스트리밍 제어**")
+col_s1, col_s2, col_s3 = st.sidebar.columns([1,1,1])
+with col_s1:
+    if st.button("▶️ 시작", key="btn_start"):
+        st.session_state.streaming_running = True
+        # 초기화: 파일을 로딩하고, 누적 버퍼 준비
+        if "stream_source_df" not in st.session_state:
+            try:
+                src = pd.read_csv("./data/predicted_test_data.csv")
+            except FileNotFoundError:
+                st.sidebar.error("`./data/predicted_test_data.csv`를 찾을 수 없습니다.")
+                st.stop()
+            # 표준화
+            if "timestamp" not in src.columns and "측정일시" in src.columns:
+                src = src.rename(columns={"측정일시": "timestamp"})
+            if "kWh" not in src.columns and "전력사용량(kWh)" in src.columns:
+                src = src.rename(columns={"전력사용량(kWh)": "kWh"})
+            src["timestamp"] = pd.to_datetime(src["timestamp"])
+            src = src.sort_values("timestamp").reset_index(drop=True)
+            st.session_state.stream_source_df = src
+            st.session_state.stream_idx = 0
+            st.session_state.stream_accum_df = pd.DataFrame(columns=src.columns)
+            st.session_state.total_bill = 0.0
+            st.session_state.total_usage = 0.0
+            st.session_state.last_timestamp = None
+with col_s2:
+    if st.button("⏸️ 일시정지", key="btn_pause"):
+        st.session_state.streaming_running = False
+with col_s3:
+    if st.button("⏹️ 초기화", key="btn_stop"):
+        st.session_state.streaming_running = False
+        for k in ["stream_source_df","stream_idx","stream_accum_df"]:
+            if k in st.session_state: del st.session_state[k]
 
 st.sidebar.subheader("계약/목표 설정")
 if "selected_tariff_code" not in st.session_state:
@@ -939,7 +934,7 @@ peer_avg_multiplier = 0.9
 
 
 st.sidebar.divider()
-if st.sidebar.button("🤖 챗봇과 대화하기", use_container_width=True):
+if st.sidebar.button("🤖 담당자와 대화하기", use_container_width=True):
     st.session_state.show_chat = True
     st.rerun()
 
@@ -952,7 +947,6 @@ if "stream_accum_df" in st.session_state and len(st.session_state.stream_accum_d
         columns={"측정일시":"timestamp","전력사용량(kWh)":"kWh"}
     )
 else:
-    # 시작 전에는 최근 24h를 비워두기보다 데모 베이스를 얹어 두면 화면이 살아있음
     raw_df = generate_demo_data(days=2)
 
 
@@ -1295,7 +1289,7 @@ with main_tab:
                     "마지막 데이터 시각",
                     last_time.strftime("%Y-%m-%d %H:%M") if isinstance(last_time, pd.Timestamp) else "-"
                 )
-                st.info("⏸ 일시정지 — [시작/재개] 버튼을 눌러 스트리밍 재개")
+                st.info("⏸ 일시정지 — [시작] 버튼을 눌러 스트리밍 재개")
             else:
                 st.warning("▶️ [시작] 버튼을 눌러 실시간 스트리밍을 시작하세요.")
 
