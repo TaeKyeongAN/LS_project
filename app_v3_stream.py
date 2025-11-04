@@ -935,15 +935,25 @@ peer_avg_multiplier = 0.9
 
 st.sidebar.divider()
 pdf_payload = st.session_state.get("sidebar_pdf_payload")
+default_pdf_name = "predicted_bill.pdf"
 if pdf_payload and pdf_payload.get("bytes"):
-    st.sidebar.download_button(
-        "📄 예측 요금 명세서 PDF 다운로드",
-        data=pdf_payload["bytes"],
-        file_name=pdf_payload.get("name", "predicted_bill.pdf"),
-        mime="application/pdf",
-        use_container_width=True,
-        key="sidebar_pdf_download",
-    )
+    sidebar_pdf_bytes = pdf_payload["bytes"]
+    sidebar_pdf_name = pdf_payload.get("name", default_pdf_name)
+    sidebar_pdf_disabled = False
+else:
+    sidebar_pdf_bytes = b""
+    sidebar_pdf_name = default_pdf_name
+    sidebar_pdf_disabled = True
+
+st.sidebar.download_button(
+    "📄 예측 요금 명세서 PDF 다운로드",
+    data=sidebar_pdf_bytes,
+    file_name=sidebar_pdf_name,
+    mime="application/pdf",
+    use_container_width=True,
+    key="sidebar_pdf_download",
+    disabled=sidebar_pdf_disabled,
+)
 
 if st.sidebar.button("🤖 담당자와 대화하기", use_container_width=True):
     st.session_state.show_chat = True
