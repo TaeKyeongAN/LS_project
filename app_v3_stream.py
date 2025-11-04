@@ -469,13 +469,20 @@ SEASON_TIME_WINDOWS: Dict[str, Dict[str, List[Tuple[int, int]]]] = {
 
 def plan_rates_to_display(energy_rates: Dict[str, Dict[str, float]]) -> pd.DataFrame:
     rows = []
+    label_map = {
+        "summer": "여름철",
+        "spring_fall": "봄가을철",
+        "winter": "겨울철",
+    }
+
     for load in LOAD_ORDER:
         seasonal = energy_rates.get(load, {})
         row = {"부하": load}
         for season_key in SEASON_KEYS:
-            label = SEASON_LABELS[season_key]
+            label = label_map.get(season_key, season_key)
             row[label] = float(seasonal.get(season_key, np.nan))
         rows.append(row)
+
     return pd.DataFrame(rows)
 
 # =========================================
@@ -902,6 +909,9 @@ if source == "실시간 전기요금 분석":
                 st.session_state.stream_source_df = src
                 st.session_state.stream_idx = 0
                 st.session_state.stream_accum_df = pd.DataFrame(columns=src.columns)
+                st.session_state.total_bill = 0.0
+                st.session_state.total_usage = 0.0
+                st.session_state.last_timestamp = None
     with col_s2:
         if st.button("⏸️ 일시정지", key="btn_pause"):
             st.session_state.streaming_running = False
@@ -1073,23 +1083,29 @@ with col_logo:
 # =========================================
 st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
 
-
 # =========================================
-# Top KPIs 
+# Streaming KPI Metrics
 # =========================================
-# colA, colB, colC, colD = st.columns(4)
-colA, colB, colC, colD = st.columns(4, gap="large")
+if "total_bill" not in st.session_state:
+    st.session_state.total_bill = 0.0
+if "total_usage" not in st.session_state:
+    st.session_state.total_usage = 0.0
+if "last_timestamp" not in st.session_state:
+    st.session_state.last_timestamp = None
 
-tm_kwh = safe_sum(this_month["kWh"]) if not this_month.empty else 0.0
-pm_kwh = safe_sum(prev_month["kWh"]) if not prev_month.empty else np.nan
-pct = ((tm_kwh - pm_kwh) / pm_kwh * 100.0) if (isinstance(pm_kwh, float) and not math.isnan(pm_kwh) and pm_kwh > 0) else np.nan
-weighted_price = float(np.nanmean(this_month["unit_price"])) if not this_month.empty else np.nan
-est_energy_charge = (tm_kwh * weighted_price) if (isinstance(weighted_price,float) and not math.isnan(weighted_price)) else 0.0
+col_bill, col_usage, col_time = st.columns(3, gap="large")
+top_bill_metric = col_bill.empty()
+top_usage_metric = col_usage.empty()
+top_time_metric = col_time.empty()
 
-colA.metric("이번달 사용량 (kWh)", f"{tm_kwh:,.0f}", human_pct(pct))
-colB.metric("평균 수요전력 (kW)", f"{this_month['kW'].mean():,.1f}" if not this_month.empty else "-")
-colC.metric("가중평균 단가 (원/kWh)", f"{weighted_price:,.0f}" if (isinstance(weighted_price,float) and not math.isnan(weighted_price)) else "-")
-colD.metric("월 예상 전력량요금 (원)", f"{est_energy_charge:,.0f}")
+top_bill_metric.metric("누적 전기요금(원)", f"{st.session_state.total_bill:,.0f}")
+top_usage_metric.metric("누적 전기사용량(kWh)", f"{st.session_state.total_usage:,.2f}")
+last_ts_display = (
+    st.session_state.last_timestamp.strftime("%Y-%m-%d %H:%M")
+    if isinstance(st.session_state.last_timestamp, pd.Timestamp)
+    else "-"
+)
+top_time_metric.metric("마지막 데이터 시각", last_ts_display)
 
 st.divider()
 
@@ -1118,10 +1134,6 @@ with main_tab:
         st.markdown("#### ⚙️ 실시간 통합 역률 추이")
         pf_chart_placeholder = st.empty()
 
-    # 하단 메트릭
-    mc1, mc2 = st.columns(2)
-    total_bill_metric = mc1.empty()
-    total_usage_metric = mc2.empty()
     latest_placeholder = st.empty()
 
     # ====================================================
@@ -1279,16 +1291,51 @@ with main_tab:
                 acc = st.session_state.get("stream_accum_df", pd.DataFrame(columns=src.columns))
                 st.session_state.stream_accum_df = pd.concat([acc, batch], ignore_index=True)
 
-                kwh = float(batch["kWh"].iloc[0])
-                st.session_state.total_bill = st.session_state.get("total_bill", 0.0) + kwh * 150
+                def _extract_value(df_row, candidates, fallback=None):
+                    for col in candidates:
+                        if col in df_row.columns:
+                            val = pd.to_numeric(df_row[col].iloc[0], errors="coerce")
+                            if pd.notna(val):
+                                return float(val)
+                    return fallback
+
+                fee = _extract_value(
+                    batch,
+                    ["pred_fee", "pred_전기요금(원)", "예측요금(원)", "전기요금(원)"],
+                )
+                kwh = _extract_value(
+                    batch,
+                    ["pred_kwh", "pred_전력사용량(kWh)", "kWh"],
+                )
+                if fee is None:
+                    unit_price = _extract_value(batch, ["unit_price"])
+                    fee = (unit_price or 0.0) * (kwh or 0.0)
+                if kwh is None:
+                    kwh = 0.0
+
+                ts_val = None
+                for ts_col in ["timestamp", "측정일시"]:
+                    if ts_col in batch.columns:
+                        ts_val = pd.to_datetime(batch[ts_col].iloc[0], errors="coerce")
+                        break
+
+                st.session_state.total_bill = st.session_state.get("total_bill", 0.0) + (fee or 0.0)
                 st.session_state.total_usage = st.session_state.get("total_usage", 0.0) + kwh
+                st.session_state.last_timestamp = ts_val if ts_val is not None and not pd.isna(ts_val) else st.session_state.get("last_timestamp")
 
                 df_acc = st.session_state.stream_accum_df.copy()
                 render_stream_views(df_acc)
 
-                total_bill_metric.metric("누적 요금(원)", f"{st.session_state.total_bill:,.0f}")
-                total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.total_usage:,.2f}")
-                latest_placeholder.info(f"📈 최근 갱신: {batch['timestamp'].iloc[0]} | {kwh:.2f} kWh")
+                top_bill_metric.metric("누적 전기요금(원)", f"{st.session_state.total_bill:,.0f}")
+                top_usage_metric.metric("누적 전기사용량(kWh)", f"{st.session_state.total_usage:,.2f}")
+                last_ts = st.session_state.last_timestamp
+                top_time_metric.metric(
+                    "마지막 데이터 시각",
+                    last_ts.strftime("%Y-%m-%d %H:%M") if isinstance(last_ts, pd.Timestamp) else "-"
+                )
+                latest_placeholder.info(
+                    f"📈 최근 갱신: {last_ts} | 사용 {kwh:.2f} kWh | 요금 {(fee or 0.0):,.0f} 원"
+                )
 
                 time.sleep(0.3)
 
@@ -1296,11 +1343,17 @@ with main_tab:
                 st.session_state.streaming_running = False
                 st.success("✅ 스트리밍 완료!")
 
+        # ⏸ 일시정지 : 현재 누적 데이터 그대로 렌더
         else:
             if "stream_accum_df" in st.session_state and len(st.session_state.stream_accum_df) > 0:
                 render_stream_views(st.session_state.stream_accum_df.copy())
-                total_bill_metric.metric("누적 요금(원)", f"{st.session_state.get('total_bill',0):,.0f}")
-                total_usage_metric.metric("누적 사용량(kWh)", f"{st.session_state.get('total_usage',0):,.2f}")
+                top_bill_metric.metric("누적 전기요금(원)", f"{st.session_state.get('total_bill',0.0):,.0f}")
+                top_usage_metric.metric("누적 전기사용량(kWh)", f"{st.session_state.get('total_usage',0.0):,.2f}")
+                last_time = st.session_state.get("last_timestamp", None)
+                top_time_metric.metric(
+                    "마지막 데이터 시각",
+                    last_time.strftime("%Y-%m-%d %H:%M") if isinstance(last_time, pd.Timestamp) else "-"
+                )
                 st.info("⏸ 일시정지 — [시작/재개] 버튼을 눌러 스트리밍 재개")
             else:
                 st.warning("▶️ [시작/재개] 버튼을 눌러 실시간 스트리밍을 시작하세요.")
