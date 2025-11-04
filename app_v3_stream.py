@@ -947,27 +947,7 @@ else:
     # 시작 전에는 최근 24h를 비워두기보다 데모 베이스를 얹어 두면 화면이 살아있음
     raw_df = generate_demo_data(days=2)
 
-# # =========================================
-# # Streaming Step (실시간 전기요금 분석 전용 루프)
-# # =========================================
-# if source == "실시간 전기요금 분석" and st.session_state.get("streaming_running", False):
-#     # 1회에 여러 행씩 밀어도 되지만, 데모에선 1행씩
-#     step = 1
-#     src = st.session_state.get("stream_source_df", None)
-#     if src is not None:
-#         idx = st.session_state.get("stream_idx", 0)
-#         if idx < len(src):
-#             batch = src.iloc[idx: idx + step].copy()
-#             st.session_state.stream_idx = idx + step
-#             # 누적 버퍼에 append
-#             acc = st.session_state.get("stream_accum_df", pd.DataFrame(columns=src.columns))
-#             st.session_state.stream_accum_df = pd.concat([acc, batch], ignore_index=True)
-#             # 화면 갱신을 위해 짧게 sleep 후 rerun
-#             time.sleep(0.15)
-#             st.rerun()
-#         else:
-#             st.session_state.streaming_running = False
-#             st.sidebar.success("✅ 스트리밍 완료")
+
 
 # =========================================
 # Preprocess & Aggregation
